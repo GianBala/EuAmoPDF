@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Tools Pro</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
+        .section-title { font-size: 0.75rem; font-weight: 700; color: #888; text-transform: uppercase; margin: 30px 0 15px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+        .converter-card { background: white; border: 1px solid #e0e0e0; padding: 15px; margin-bottom: 10px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; transition: 0.2s; }
+        .converter-card:hover { border-color: #0d6efd; background: #f0f7ff; transform: translateY(-2px); }
+        .icon { font-size: 1.4rem; margin-right: 15px; width: 30px; text-align: center; }
+    </style>
+</head>
+<body class="container py-5">
+    <h3 class="text-center mb-5">Ferramentas de PDF</h3>
+
+    <div class="row">
+        <div class="col-12"><div class="section-title">Organizar PDF</div></div>
+        <div class="col-md-6" onclick="openModal('merge-pdf', 'Juntar PDFs', true)"><div class="converter-card"><span class="icon">🔗</span> Juntar PDF</div></div>
+        <div class="col-md-6" onclick="openModal('split-pdf', 'Dividir PDF', false)"><div class="converter-card"><span class="icon">✂️</span> Dividir / Intervalo</div></div>
+
+        <div class="col-md-6">
+            <div class="section-title">Converter em PDF</div>
+            <div class="converter-card" onclick="openModal('jpg-to-pdf', 'JPG para PDF')"><span class="icon">🖼️</span> JPG para PDF</div>
+            <div class="converter-card" onclick="openModal('word-to-pdf', 'WORD para PDF')"><span class="icon">📘</span> WORD para PDF</div>
+            <div class="converter-card" onclick="openModal('ppt-to-pdf', 'PPT para PDF')"><span class="icon">📙</span> PPT para PDF</div>
+            <div class="converter-card" onclick="openModal('excel-to-pdf', 'EXCEL para PDF')"><span class="icon">📗</span> EXCEL para PDF</div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="section-title">Converter de PDF</div>
+            <div class="converter-card" onclick="openModal('pdf-to-jpg', 'PDF para JPG')"><span class="icon">🖼️</span> PDF para JPG</div>
+            <div class="converter-card" onclick="openModal('pdf-to-word', 'PDF para WORD')"><span class="icon">📘</span> PDF para WORD</div>
+            <div class="converter-card" onclick="openModal('pdf-to-ppt', 'PDF para PPT')"><span class="icon">📙</span> PDF para PPT</div>
+            <div class="converter-card" onclick="openModal('pdf-to-excel', 'PDF para EXCEL')"><span class="icon">📗</span> PDF para EXCEL</div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="upModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <form class="modal-content" action="/convert" method="post" enctype="multipart/form-data">
+                <div class="modal-header border-0"><h5 id="mTitle" class="fw-bold">Upload</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-body">
+                    <input type="hidden" name="action" id="mAction">
+                    <div id="divInterval" class="mb-3 d-none">
+                        <label class="small text-muted">Extrair intervalo (opcional):</label>
+                        <div class="d-flex gap-2"><input type="number" name="page_start" class="form-control" placeholder="De"><input type="number" name="page_end" class="form-control" placeholder="Até"></div>
+                    </div>
+                    <input type="file" name="file" id="fIn" class="form-control" required>
+                </div>
+                <div class="modal-footer border-0"><button type="submit" class="btn btn-primary w-100 py-2 fw-bold">EXECUTAR</button></div>
+            </form>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const modal = new bootstrap.Modal(document.getElementById('upModal'));
+        function openModal(act, title, multi=false) {
+            document.getElementById('mAction').value = act;
+            document.getElementById('mTitle').innerText = title;
+            document.getElementById('divInterval').classList.toggle('d-none', act !== 'split-pdf');
+            const f = document.getElementById('fIn');
+            multi ? f.setAttribute('multiple', '') : f.removeAttribute('multiple');
+            modal.show();
+        }
+    </script>
+</body>
+</html>
