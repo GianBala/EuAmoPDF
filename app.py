@@ -10,6 +10,8 @@ import pandas as pd
 import pdfplumber
 import time
 import zipfile
+import webbrowser # Biblioteca para abrir o navegador
+from threading import Timer # Para atrasar a abertura em 1 segundo
 from PyPDF2 import PdfReader, PdfWriter, PdfMerger
 
 app = Flask(__name__)
@@ -53,6 +55,10 @@ def office_to_pdf(input_path, output_path, app_name):
             pres.Close()
         app_inst.Quit()
     finally: pythoncom.CoUninitialize()
+
+def open_browser():
+    """Abre o navegador no endereço local"""
+    webbrowser.open_new("http://127.0.0.1:5000/")
 
 @app.route('/')
 def index():
@@ -124,4 +130,7 @@ def handle_conversion():
     except Exception as e: return f"Erro: {str(e)}", 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # O Timer aguarda 1 segundo para garantir que o servidor Flask já subiu
+    # O parâmetro 'use_reloader=False' evita que o navegador abra duas vezes ao iniciar
+    Timer(1, open_browser).start()
+    app.run(debug=True, use_reloader=False)
