@@ -1,0 +1,10 @@
+Flask 
+Pillow 
+pdf2image 
+pdf2docx 
+python-pptx 
+pandas 
+openpyxl 
+pywin32 
+PyPDF2 
+pdfplumber
