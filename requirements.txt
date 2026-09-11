@@ -1,10 +1,10 @@
-Flask 
-Pillow 
-pdf2image 
-pdf2docx 
-python-pptx 
-pandas 
-openpyxl 
-pywin32 
-PyPDF2 
+Flask
+Pillow
+pdf2image
+pdf2docx
+python-pptx
+pandas
+openpyxl
+pywin32; sys_platform == 'win32'
+PyPDF2
 pdfplumber
