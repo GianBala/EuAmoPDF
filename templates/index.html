@@ -44,8 +44,8 @@
                 <div class="modal-body">
                     <input type="hidden" name="action" id="mAction">
                     <div id="divInterval" class="mb-3 d-none">
-                        <label class="small text-muted">Extrair intervalo (opcional):</label>
-                        <div class="d-flex gap-2"><input type="number" name="page_start" class="form-control" placeholder="De"><input type="number" name="page_end" class="form-control" placeholder="Até"></div>
+                        <label class="small text-muted" for="fPages">Páginas a extrair (vazio = uma por arquivo):</label>
+                        <input type="text" name="pages" id="fPages" class="form-control" placeholder="Ex.: 1-3, 5, 8">
                     </div>
                     <input type="file" name="file" id="fIn" class="form-control" required>
                 </div>

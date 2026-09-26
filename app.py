@@ -27,6 +27,12 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 POPPLER_PATH = BASE_DIR / 'poppler-25.12.0' / 'Library' / 'bin'
 LOCAL_HOSTS = {'127.0.0.1', 'localhost'}
+MAX_UPLOAD_MB = 500
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
+
+
+class UserError(Exception):
+    """Erro causado pela entrada do usuário; a mensagem é mostrada como está."""
 
 
 @app.before_request
@@ -83,6 +89,36 @@ def office_to_pdf(input_path, output_path, app_name):
         generated_pdf.replace(output_path)
 
 
+def open_pdf(path):
+    try:
+        reader = PdfReader(path)
+    except Exception:
+        raise UserError("O arquivo não é um PDF válido ou está corrompido.")
+    if reader.is_encrypted:
+        raise UserError("Este PDF está protegido por senha.")
+    return reader
+
+
+def parse_pages(spec, count):
+    """Converte '1-3, 5' em índices [0, 1, 2, 4], na ordem em que foram escritos."""
+    pages = []
+    for part in spec.replace(' ', '').split(','):
+        if not part:
+            continue
+        m = re.fullmatch(r'(\d+)(?:-(\d+))?', part)
+        if not m:
+            raise UserError(f"Não entendi \"{part}\". Escreva as páginas assim: 1-3, 5, 8.")
+        start, end = int(m[1]), int(m[2] or m[1])
+        if start > end:
+            raise UserError(f"Intervalo invertido: \"{part}\". Use o menor número primeiro.")
+        if start < 1 or end > count:
+            raise UserError(f"Página fora do documento: \"{part}\". O PDF tem {count} página(s).")
+        pages.extend(range(start - 1, end))
+    if not pages:
+        raise UserError("Informe ao menos uma página.")
+    return pages
+
+
 # --- AÇÕES ---
 # Cada ação recebe a lista de (caminho salvo, nome original sem extensão),
 # o formulário e a pasta temporária da requisição, e devolve (bytes, nome do download).
@@ -90,7 +126,7 @@ def office_to_pdf(input_path, output_path, app_name):
 def merge_pdf(files, form, tmp):
     merger = PdfMerger()
     for path, _ in files:
-        merger.append(str(path))
+        merger.append(open_pdf(path))
     buf = io.BytesIO()
     merger.write(buf); merger.close()
     return buf.getvalue(), "PDF_Unido.pdf"
@@ -98,17 +134,16 @@ def merge_pdf(files, form, tmp):
 
 def split_pdf(files, form, tmp):
     path, base = files[0]
-    reader = PdfReader(path)
-    start = form.get('page_start')
-    end = form.get('page_end')
+    reader = open_pdf(path)
+    spec = form.get('pages', '').strip()
 
-    if start and end:
+    if spec:
         writer = PdfWriter()
-        for i in range(int(start)-1, min(int(end), len(reader.pages))):
+        for i in parse_pages(spec, len(reader.pages)):
             writer.add_page(reader.pages[i])
         buf = io.BytesIO()
         writer.write(buf)
-        return buf.getvalue(), f"{base}_recorte.pdf"
+        return buf.getvalue(), f"{base}_paginas.pdf"
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
@@ -132,12 +167,17 @@ def office_action(app_name):
 def jpg_to_pdf(files, form, tmp):
     path, base = files[0]
     buf = io.BytesIO()
-    Image.open(path).convert('RGB').save(buf, 'PDF')
+    try:
+        img = Image.open(path)
+    except Exception:
+        raise UserError("O arquivo não é uma imagem válida.")
+    img.convert('RGB').save(buf, 'PDF')
     return buf.getvalue(), f"{base}.pdf"
 
 
 def pdf_to_word(files, form, tmp):
     path, base = files[0]
+    open_pdf(path)
     out = tmp / 'saida.docx'
     cv = Converter(str(path)); cv.convert(str(out)); cv.close()
     return out.read_bytes(), f"{base}.docx"
@@ -145,6 +185,7 @@ def pdf_to_word(files, form, tmp):
 
 def pdf_to_jpg(files, form, tmp):
     path, base = files[0]
+    open_pdf(path)
     p_path = POPPLER_PATH if (sys.platform == 'win32' and POPPLER_PATH.exists()) else None
     imgs = convert_from_path(path, poppler_path=p_path)
     buf = io.BytesIO()
@@ -152,15 +193,22 @@ def pdf_to_jpg(files, form, tmp):
     return buf.getvalue(), f"{base}.jpg"
 
 
+PDF = ('.pdf',)
+WORD = ('.doc', '.docx', '.odt', '.rtf')
+EXCEL = ('.xls', '.xlsx', '.ods', '.csv')
+POWERPOINT = ('.ppt', '.pptx', '.odp')
+IMAGES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff')
+
+# ação: (função, extensões aceitas, aceita vários arquivos)
 ACTIONS = {
-    "merge-pdf": merge_pdf,
-    "split-pdf": split_pdf,
-    "word-to-pdf": office_action("Word.Application"),
-    "excel-to-pdf": office_action("Excel.Application"),
-    "ppt-to-pdf": office_action("PowerPoint.Application"),
-    "jpg-to-pdf": jpg_to_pdf,
-    "pdf-to-word": pdf_to_word,
-    "pdf-to-jpg": pdf_to_jpg,
+    "merge-pdf": (merge_pdf, PDF, True),
+    "split-pdf": (split_pdf, PDF, False),
+    "word-to-pdf": (office_action("Word.Application"), WORD, False),
+    "excel-to-pdf": (office_action("Excel.Application"), EXCEL, False),
+    "ppt-to-pdf": (office_action("PowerPoint.Application"), POWERPOINT, False),
+    "jpg-to-pdf": (jpg_to_pdf, IMAGES, False),
+    "pdf-to-word": (pdf_to_word, PDF, False),
+    "pdf-to-jpg": (pdf_to_jpg, PDF, False),
 }
 
 
@@ -180,19 +228,41 @@ def save_uploads(uploads, tmp):
 def index():
     return render_template('index.html')
 
+def check_uploads(files, accepted, multiple):
+    if not files:
+        raise UserError("Escolha um arquivo.")
+    if len(files) > 1 and not multiple:
+        raise UserError("Esta ferramenta aceita um arquivo por vez.")
+    for f in files:
+        if Path(f.filename).suffix.lower() not in accepted:
+            raise UserError(f"\"{f.filename}\" não é do tipo aceito aqui ({', '.join(accepted)}).")
+
+
+@app.errorhandler(413)
+def too_large(e):
+    return f"Arquivo grande demais: o limite é {MAX_UPLOAD_MB} MB.", 413
+
 @app.route('/convert', methods=['POST'])
 def handle_conversion():
     action = request.form.get('action')
-    files = request.files.getlist('file')
-    if not files or files[0].filename == '': return "Nenhum arquivo", 400
-    if action not in ACTIONS: return "Ação desconhecida", 400
+    files = [f for f in request.files.getlist('file') if f.filename]
+    if action not in ACTIONS: return "Ferramenta desconhecida.", 400
+    handler, accepted, multiple = ACTIONS[action]
 
     try:
+        check_uploads(files, accepted, multiple)
         # Tudo acontece numa pasta temporária própria, apagada ao fim da requisição
         with tempfile.TemporaryDirectory(prefix='euamopdf-') as tmp:
             tmp = Path(tmp)
-            data, download_name = ACTIONS[action](save_uploads(files, tmp), request.form, tmp)
-    except Exception as e: return f"Erro: {str(e)}", 500
+            saved = save_uploads(files, tmp)
+            if any(path.stat().st_size == 0 for path, _ in saved):
+                raise UserError("O arquivo enviado está vazio.")
+            data, download_name = handler(saved, request.form, tmp)
+    except UserError as e:
+        return str(e), 400
+    except Exception:
+        app.logger.exception("Falha em %s", action)
+        return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500
 
     return send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
 
