@@ -95,6 +95,33 @@ def test_pdf_to_word(client):
     assert b"Pagina 2" in unzip(r.data)["word/document.xml"]
 
 
+def make_table_pdf(rows):
+    """PDF com uma tabela de bordas desenhadas, como as geradas por planilhas."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for r, row in enumerate(rows):
+        for c, value in enumerate(row):
+            cell = pymupdf.Rect(72 + c * 120, 72 + r * 24, 192 + c * 120, 96 + r * 24)
+            page.draw_rect(cell, color=(0, 0, 0), width=0.5)
+            page.insert_text(cell.bl + (4, -7), value)
+    return doc.tobytes()
+
+
+def test_pdf_to_excel_extracts_tables(client):
+    openpyxl = pytest.importorskip("openpyxl")
+    rows = [["Produto", "Preço"], ["Café", "12,50"], ["Pão", "0,75"]]
+    r = post(client, "pdf-to-excel", ("tabela.pdf", make_table_pdf(rows)))
+    assert r.status_code == 200
+    sheet = openpyxl.load_workbook(io.BytesIO(r.data)).worksheets[0]
+    assert [[cell.value for cell in row] for row in sheet.iter_rows()] == rows
+
+
+def test_pdf_to_excel_without_tables(client):
+    r = post(client, "pdf-to-excel", ("texto.pdf", make_pdf()))
+    assert r.status_code == 400
+    assert "Nenhuma tabela" in r.get_data(as_text=True)
+
+
 # --- Converter para PDF ---
 
 def test_images_to_pdf_one_a4_page_per_image(client):

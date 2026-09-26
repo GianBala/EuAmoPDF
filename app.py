@@ -243,6 +243,25 @@ def pdf_to_jpg(files, form, tmp):
     return buf.getvalue(), f"{base}_imagens.zip"
 
 
+def pdf_to_excel(files, form, tmp):
+    from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    path, base = files[0]
+    doc = open_pdf(path)
+    wb = Workbook()
+    wb.remove(wb.active)
+    for page in doc:
+        for n, table in enumerate(page.find_tables().tables, 1):
+            ws = wb.create_sheet(f"Pág {page.number + 1} - Tabela {n}")
+            for row in table.extract():
+                ws.append([ILLEGAL_CHARACTERS_RE.sub('', cell) if cell else None for cell in row])
+    if not wb.sheetnames:
+        raise UserError("Nenhuma tabela encontrada neste PDF. Se ele for escaneado, passe o OCR antes.")
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), f"{base}.xlsx"
+
+
 PDF = ('.pdf',)
 WORD = ('.doc', '.docx', '.odt', '.rtf')
 EXCEL = ('.xls', '.xlsx', '.ods', '.csv')
@@ -259,6 +278,7 @@ ACTIONS = {
     "jpg-to-pdf": (images_to_pdf, IMAGES, True),
     "pdf-to-word": (pdf_to_word, PDF, False),
     "pdf-to-jpg": (pdf_to_jpg, PDF, False),
+    "pdf-to-excel": (pdf_to_excel, PDF, False),
 }
 
 
