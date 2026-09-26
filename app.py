@@ -14,18 +14,14 @@ if sys.platform == 'win32':
     import win32com.client
     import pythoncom
 
-from PIL import Image
-from pdf2image import convert_from_path
-from pdf2docx import Converter
 import zipfile
-from PyPDF2 import PdfReader, PdfWriter, PdfMerger
+import pymupdf
+from PIL import Image
 
 
 app = Flask(__name__)
 
 # --- CONFIGURAÇÕES ---
-BASE_DIR = Path(__file__).resolve().parent
-POPPLER_PATH = BASE_DIR / 'poppler-25.12.0' / 'Library' / 'bin'
 LOCAL_HOSTS = {'127.0.0.1', 'localhost'}
 MAX_UPLOAD_MB = 500
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
@@ -91,12 +87,16 @@ def office_to_pdf(input_path, output_path, app_name):
 
 def open_pdf(path):
     try:
-        reader = PdfReader(path)
+        doc = pymupdf.open(path, filetype='pdf')
     except Exception:
         raise UserError("O arquivo não é um PDF válido ou está corrompido.")
-    if reader.is_encrypted:
+    if doc.needs_pass:
         raise UserError("Este PDF está protegido por senha.")
-    return reader
+    return doc
+
+
+def pdf_bytes(doc):
+    return doc.tobytes(garbage=3, deflate=True)
 
 
 def parse_pages(spec, count):
@@ -124,34 +124,27 @@ def parse_pages(spec, count):
 # o formulário e a pasta temporária da requisição, e devolve (bytes, nome do download).
 
 def merge_pdf(files, form, tmp):
-    merger = PdfMerger()
+    out = pymupdf.open()
     for path, _ in files:
-        merger.append(open_pdf(path))
-    buf = io.BytesIO()
-    merger.write(buf); merger.close()
-    return buf.getvalue(), "PDF_Unido.pdf"
+        out.insert_pdf(open_pdf(path))
+    return pdf_bytes(out), "PDF_Unido.pdf"
 
 
 def split_pdf(files, form, tmp):
     path, base = files[0]
-    reader = open_pdf(path)
+    doc = open_pdf(path)
     spec = form.get('pages', '').strip()
 
     if spec:
-        writer = PdfWriter()
-        for i in parse_pages(spec, len(reader.pages)):
-            writer.add_page(reader.pages[i])
-        buf = io.BytesIO()
-        writer.write(buf)
-        return buf.getvalue(), f"{base}_paginas.pdf"
+        doc.select(parse_pages(spec, doc.page_count))
+        return pdf_bytes(doc), f"{base}_paginas.pdf"
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-        for i, page in enumerate(reader.pages):
-            w = PdfWriter(); w.add_page(page)
-            page_buf = io.BytesIO()
-            w.write(page_buf)
-            z.writestr(f"pag_{i+1}.pdf", page_buf.getvalue())
+        for i in range(doc.page_count):
+            page = pymupdf.open()
+            page.insert_pdf(doc, from_page=i, to_page=i)
+            z.writestr(f"pag_{i+1}.pdf", pdf_bytes(page))
     return buf.getvalue(), f"{base}_dividido.zip"
 
 
@@ -178,6 +171,7 @@ def jpg_to_pdf(files, form, tmp):
 def pdf_to_word(files, form, tmp):
     path, base = files[0]
     open_pdf(path)
+    from pdf2docx import Converter  # importação lenta: só quando usada
     out = tmp / 'saida.docx'
     cv = Converter(str(path)); cv.convert(str(out)); cv.close()
     return out.read_bytes(), f"{base}.docx"
@@ -185,12 +179,8 @@ def pdf_to_word(files, form, tmp):
 
 def pdf_to_jpg(files, form, tmp):
     path, base = files[0]
-    open_pdf(path)
-    p_path = POPPLER_PATH if (sys.platform == 'win32' and POPPLER_PATH.exists()) else None
-    imgs = convert_from_path(path, poppler_path=p_path)
-    buf = io.BytesIO()
-    imgs[0].save(buf, 'JPEG')
-    return buf.getvalue(), f"{base}.jpg"
+    doc = open_pdf(path)
+    return doc[0].get_pixmap(dpi=200).tobytes('jpg', jpg_quality=90), f"{base}.jpg"
 
 
 PDF = ('.pdf',)
