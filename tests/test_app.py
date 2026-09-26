@@ -214,6 +214,21 @@ def test_parse_pages():
         euamopdf.parse_pages("6", 5)
 
 
+# --- Interface ---
+
+def test_index_has_a_button_for_every_tool(client):
+    page = client.get("/").get_data(as_text=True)
+    for action in euamopdf.ACTIONS:
+        assert f'data-action="{action}"' in page
+
+
+def test_page_count(client):
+    r = client.post("/pages", data={"file": (io.BytesIO(make_pdf(4)), "a.pdf")}, content_type="multipart/form-data")
+    assert r.get_json() == {"paginas": 4}
+    r = client.post("/pages", data={"file": (io.BytesIO(b"lixo"), "a.pdf")}, content_type="multipart/form-data")
+    assert r.status_code == 400
+
+
 # --- Segurança e isolamento ---
 
 def test_upload_names_cannot_escape_temp_folder(client, tmp_path):

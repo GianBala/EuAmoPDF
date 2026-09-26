@@ -2,78 +2,96 @@
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <title>PDF Tools Pro</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
-        .section-title { font-size: 0.75rem; font-weight: 700; color: #888; text-transform: uppercase; margin: 30px 0 15px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
-        .converter-card { background: white; border: 1px solid #e0e0e0; padding: 15px; margin-bottom: 10px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; transition: 0.2s; }
-        .converter-card:hover { border-color: #0d6efd; background: #f0f7ff; transform: translateY(-2px); }
-        .icon { font-size: 1.4rem; margin-right: 15px; width: 30px; text-align: center; }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EuAmoPDF</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>❤️</text></svg>">
+    <link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}">
 </head>
-<body class="container py-5">
-    <h3 class="text-center mb-5">Ferramentas de PDF</h3>
+<body>
+{% macro tool(action, icon, title, desc, fields='', hint='') %}
+    <button type="button" class="tool" data-action="{{ action }}" data-title="{{ title }}"
+            data-accept="{{ tools[action].accept }}" data-fields="{{ fields }}" data-hint="{{ hint }}"
+            {%- if tools[action].multiple %} data-multiple{% endif %}>
+        <span class="tool-icon" aria-hidden="true">{{ icon }}</span>
+        <span class="tool-text"><strong>{{ title }}</strong><small>{{ desc }}</small></span>
+    </button>
+{% endmacro %}
 
-    <div class="row">
-        <div class="col-12"><div class="section-title">Organizar PDF</div></div>
-        <div class="col-md-6" onclick="openModal('merge-pdf', 'Juntar PDFs', true)"><div class="converter-card"><span class="icon">🔗</span> Juntar PDF</div></div>
-        <div class="col-md-6" onclick="openModal('split-pdf', 'Dividir PDF', false)"><div class="converter-card"><span class="icon">✂️</span> Dividir / Intervalo</div></div>
+<header>
+    <h1>Eu<span class="heart" aria-hidden="true">♥</span><span class="sr-only">Amo</span>PDF</h1>
+    <p>Ferramentas de PDF que rodam no seu computador. Seus arquivos não vão para a internet.</p>
+</header>
 
-        <div class="col-md-6">
-            <div class="section-title">Converter em PDF</div>
-            <div class="converter-card" onclick="openModal('jpg-to-pdf', 'Imagens para PDF', true)"><span class="icon">🖼️</span> Imagens para PDF</div>
-            <div class="converter-card" onclick="openModal('word-to-pdf', 'WORD para PDF')"><span class="icon">📘</span> WORD para PDF</div>
-            <div class="converter-card" onclick="openModal('ppt-to-pdf', 'PPT para PDF')"><span class="icon">📙</span> PPT para PDF</div>
-            <div class="converter-card" onclick="openModal('excel-to-pdf', 'EXCEL para PDF')"><span class="icon">📗</span> EXCEL para PDF</div>
+<main>
+    <section>
+        <h2>Organizar</h2>
+        <div class="grid">
+            {{ tool('merge-pdf', '🔗', 'Juntar PDF', 'Una vários PDFs em um, na ordem que quiser.') }}
+            {{ tool('split-pdf', '✂️', 'Dividir PDF', 'Separe as páginas ou extraia só as que precisar.', 'pages',
+                    'Deixe as páginas em branco para gerar um PDF por página.') }}
+        </div>
+    </section>
+
+    <section>
+        <h2>Converter para PDF</h2>
+        <div class="grid">
+            {{ tool('jpg-to-pdf', '🖼️', 'Imagens para PDF', 'JPG, PNG e outras, uma por página A4.') }}
+            {{ tool('word-to-pdf', '📘', 'Word para PDF', 'Documentos .docx, .doc, .odt e .rtf.') }}
+            {{ tool('ppt-to-pdf', '📙', 'PowerPoint para PDF', 'Apresentações .pptx, .ppt e .odp.') }}
+            {{ tool('excel-to-pdf', '📗', 'Excel para PDF', 'Planilhas .xlsx, .xls, .ods e .csv.') }}
+        </div>
+    </section>
+
+    <section>
+        <h2>Converter de PDF</h2>
+        <div class="grid">
+            {{ tool('pdf-to-jpg', '🖼️', 'PDF para JPG', 'Uma imagem por página.', 'dpi') }}
+            {{ tool('pdf-to-word', '📘', 'PDF para Word', 'Documento editável no Word.', '',
+                    'Funciona com PDFs que têm texto. PDFs escaneados precisam de OCR antes.') }}
+            {{ tool('pdf-to-ppt', '📙', 'PDF para PowerPoint', 'Um slide por página.', '',
+                    'Cada página vira uma imagem no slide: o texto não fica editável.') }}
+            {{ tool('pdf-to-excel', '📗', 'PDF para Excel', 'Extrai as tabelas para uma planilha.', '',
+                    'Cada tabela encontrada vira uma aba da planilha.') }}
+        </div>
+    </section>
+</main>
+
+<dialog id="dialog" aria-labelledby="dialog-title">
+    <form id="form">
+        <div class="dialog-head">
+            <h3 id="dialog-title"></h3>
+            <button type="button" class="icon-button" id="close" aria-label="Fechar">✕</button>
+        </div>
+        <p id="dialog-desc" class="muted"></p>
+
+        <label class="drop" id="drop">
+            <input type="file" id="file-input" class="sr-only">
+            <span class="drop-icon" aria-hidden="true">📄</span>
+            <span id="drop-text"></span>
+        </label>
+        <ul id="file-list" class="file-list"></ul>
+        <p id="page-info" class="muted" hidden></p>
+
+        <div class="field" data-field="pages" hidden>
+            <label for="pages">Páginas</label>
+            <input type="text" name="pages" id="pages" placeholder="Ex.: 1-3, 5, 8" autocomplete="off">
+        </div>
+        <div class="field" data-field="dpi" hidden>
+            <label for="dpi">Qualidade das imagens</label>
+            <select name="dpi" id="dpi">
+                <option value="72">Baixa (72 DPI), arquivos menores</option>
+                <option value="150" selected>Média (150 DPI)</option>
+                <option value="300">Alta (300 DPI), para impressão</option>
+            </select>
         </div>
 
-        <div class="col-md-6">
-            <div class="section-title">Converter de PDF</div>
-            <div class="converter-card" onclick="openModal('pdf-to-jpg', 'PDF para JPG')"><span class="icon">🖼️</span> PDF para JPG</div>
-            <div class="converter-card" onclick="openModal('pdf-to-word', 'PDF para WORD')"><span class="icon">📘</span> PDF para WORD</div>
-            <div class="converter-card" onclick="openModal('pdf-to-ppt', 'PDF para PPT')"><span class="icon">📙</span> PDF para PPT</div>
-            <div class="converter-card" onclick="openModal('pdf-to-excel', 'PDF para EXCEL')"><span class="icon">📗</span> PDF para EXCEL</div>
-        </div>
-    </div>
+        <p id="hint" class="hint" hidden></p>
+        <p id="status" class="status" role="status" aria-live="polite" hidden></p>
 
-    <div class="modal fade" id="upModal" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
-            <form class="modal-content" action="/convert" method="post" enctype="multipart/form-data">
-                <div class="modal-header border-0"><h5 id="mTitle" class="fw-bold">Upload</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-                <div class="modal-body">
-                    <input type="hidden" name="action" id="mAction">
-                    <div id="divInterval" class="mb-3 d-none">
-                        <label class="small text-muted" for="fPages">Páginas a extrair (vazio = uma por arquivo):</label>
-                        <input type="text" name="pages" id="fPages" class="form-control" placeholder="Ex.: 1-3, 5, 8">
-                    </div>
-                    <div id="divDpi" class="mb-3 d-none">
-                        <label class="small text-muted" for="fDpi">Qualidade das imagens:</label>
-                        <select name="dpi" id="fDpi" class="form-select">
-                            <option value="72">Baixa (72 DPI)</option>
-                            <option value="150" selected>Média (150 DPI)</option>
-                            <option value="300">Alta (300 DPI)</option>
-                        </select>
-                    </div>
-                    <input type="file" name="file" id="fIn" class="form-control" required>
-                </div>
-                <div class="modal-footer border-0"><button type="submit" class="btn btn-primary w-100 py-2 fw-bold">EXECUTAR</button></div>
-            </form>
-        </div>
-    </div>
+        <button type="submit" id="submit" class="primary"></button>
+    </form>
+</dialog>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        const modal = new bootstrap.Modal(document.getElementById('upModal'));
-        function openModal(act, title, multi=false) {
-            document.getElementById('mAction').value = act;
-            document.getElementById('mTitle').innerText = title;
-            document.getElementById('divInterval').classList.toggle('d-none', act !== 'split-pdf');
-            document.getElementById('divDpi').classList.toggle('d-none', act !== 'pdf-to-jpg');
-            const f = document.getElementById('fIn');
-            multi ? f.setAttribute('multiple', '') : f.removeAttribute('multiple');
-            modal.show();
-        }
-    </script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

@@ -110,9 +110,13 @@ def office_to_pdf(src, tmp, app_name):
     return libreoffice_to_pdf(src, out_dir)
 
 
-def open_pdf(path):
+def open_pdf(source):
+    """Abre um PDF a partir do caminho ou dos bytes do arquivo."""
     try:
-        doc = pymupdf.open(path, filetype='pdf')
+        if isinstance(source, bytes):
+            doc = pymupdf.open(stream=source, filetype='pdf')
+        else:
+            doc = pymupdf.open(source, filetype='pdf')
     except Exception:
         raise UserError("O arquivo não é um PDF válido ou está corrompido.")
     if doc.needs_pass:
@@ -319,7 +323,20 @@ def save_uploads(uploads, tmp):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    # Extensões aceitas e se aceita vários arquivos, para os botões da interface
+    tools = {action: {'accept': ','.join(accepted), 'multiple': multiple}
+             for action, (_, accepted, multiple) in ACTIONS.items()}
+    return render_template('index.html', tools=tools)
+
+@app.route('/pages', methods=['POST'])
+def page_info():
+    """Número de páginas do PDF escolhido, que a interface mostra antes da conversão."""
+    f = request.files.get('file')
+    try:
+        doc = open_pdf(f.read() if f else b'')
+    except UserError as e:
+        return {'erro': str(e)}, 400
+    return {'paginas': doc.page_count}
 
 def check_uploads(files, accepted, multiple):
     if not files:
