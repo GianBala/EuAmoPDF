@@ -16,7 +16,7 @@ if sys.platform == 'win32':
 
 import zipfile
 import pymupdf
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 app = Flask(__name__)
@@ -157,15 +157,40 @@ def office_action(app_name):
     return convert
 
 
-def jpg_to_pdf(files, form, tmp):
-    path, base = files[0]
-    buf = io.BytesIO()
+A4 = pymupdf.paper_rect('a4')
+
+
+def load_image(path):
+    """Abre a imagem já na orientação da foto e com a transparência sobre fundo branco."""
     try:
         img = Image.open(path)
+        fmt = img.format
+        img = ImageOps.exif_transpose(img)
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
-    img.convert('RGB').save(buf, 'PDF')
-    return buf.getvalue(), f"{base}.pdf"
+    if img.mode in ('RGBA', 'LA', 'PA') or 'transparency' in img.info:
+        img = img.convert('RGBA')
+        bg = Image.new('RGB', img.size, 'white')
+        bg.paste(img, mask=img.getchannel('A'))
+        img = bg
+    buf = io.BytesIO()
+    if fmt == 'JPEG':  # foto continua JPEG; o resto vira PNG para não borrar texto
+        img.convert('RGB').save(buf, 'JPEG', quality=95)
+    else:
+        img.convert('RGB').save(buf, 'PNG')
+    return buf.getvalue(), img.size
+
+
+def images_to_pdf(files, form, tmp):
+    out = pymupdf.open()
+    for path, _ in files:
+        data, (w, h) = load_image(path)
+        # Página A4 em pé ou deitada, conforme a imagem, com a imagem inteira centralizada
+        size = (A4.width, A4.height) if h >= w else (A4.height, A4.width)
+        page = out.new_page(width=size[0], height=size[1])
+        page.insert_image(page.rect, stream=data)
+    name = f"{files[0][1]}.pdf" if len(files) == 1 else "Imagens.pdf"
+    return pdf_bytes(out), name
 
 
 def pdf_to_word(files, form, tmp):
@@ -208,7 +233,7 @@ ACTIONS = {
     "word-to-pdf": (office_action("Word.Application"), WORD, False),
     "excel-to-pdf": (office_action("Excel.Application"), EXCEL, False),
     "ppt-to-pdf": (office_action("PowerPoint.Application"), POWERPOINT, False),
-    "jpg-to-pdf": (jpg_to_pdf, IMAGES, False),
+    "jpg-to-pdf": (images_to_pdf, IMAGES, True),
     "pdf-to-word": (pdf_to_word, PDF, False),
     "pdf-to-jpg": (pdf_to_jpg, PDF, False),
 }
