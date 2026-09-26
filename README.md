@@ -3,7 +3,7 @@
 # Eu❤️PDF
 
 **Ferramentas de PDF que rodam no seu computador.**<br>
-Juntar, dividir, comprimir, converter, OCR e senha, sem enviar nenhum arquivo para a internet.
+Juntar, dividir, comprimir PDFs e imagens, converter, OCR e senha, sem enviar nenhum arquivo para a internet.
 
 [![Testes](https://github.com/GianBala/EuAmoPDF/actions/workflows/tests.yml/badge.svg)](https://github.com/GianBala/EuAmoPDF/actions/workflows/tests.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -38,7 +38,8 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 
 ### ⚡ Otimizar
 
-- **Comprimir**, reduzindo a resolução das imagens (o texto não perde qualidade)
+- **Comprimir PDF**, reduzindo a resolução das imagens (o texto não perde qualidade)
+- **Comprimir imagens** JPG, PNG e WebP, uma ou várias de uma vez, com quatro níveis de compressão, tamanho máximo, troca de formato e remoção dos dados da foto (localização, câmera)
 - **OCR** em PDFs escaneados: o texto passa a poder ser buscado e copiado, sem mudar a aparência
 
 ### ✏️ Editar e 🔒 Segurança
