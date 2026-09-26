@@ -39,15 +39,27 @@ def only_local_requests():
         return "Acesso permitido só a partir deste computador.", 403
 
 
-def find_soffice():
-    found = shutil.which('soffice') or shutil.which('libreoffice')
-    if found or sys.platform != 'win32':
-        return found
-    # No Windows o instalador do LibreOffice não põe o soffice no PATH
+def program_file(*parts):
+    """Caminho dentro de Program Files, no Windows, onde os instaladores não mexem no PATH."""
+    if sys.platform != 'win32':
+        return None
     for base in (os.environ.get('PROGRAMFILES'), os.environ.get('PROGRAMFILES(X86)')):
-        if base and (exe := Path(base, 'LibreOffice', 'program', 'soffice.exe')).exists():
-            return str(exe)
+        if base and (path := Path(base, *parts)).exists():
+            return str(path)
     return None
+
+
+def find_soffice():
+    return shutil.which('soffice') or shutil.which('libreoffice') or \
+        program_file('LibreOffice', 'program', 'soffice.exe')
+
+
+def find_tessdata():
+    """Pasta de idiomas do Tesseract, ou None se ele não estiver instalado."""
+    try:
+        return pymupdf.get_tessdata()
+    except Exception:
+        return program_file('Tesseract-OCR', 'tessdata')
 
 
 def msoffice_to_pdf(src, out, app_name):
@@ -373,6 +385,42 @@ def number_pages(files, form, tmp):
     return pdf_bytes(doc), f"{base}_numerado.pdf"
 
 
+def add_invisible_text(page, words):
+    """Escreve as palavras do OCR invisíveis sobre a imagem, para buscar e selecionar."""
+    # Todas as palavras de uma linha usam a mesma base e altura, para a linha não se partir
+    lines = {}
+    for x0, y0, x1, y1, word, block, line, _ in words:
+        bottom, height = lines.get((block, line), (0, 0))
+        lines[(block, line)] = (max(bottom, y1), max(height, y1 - y0))
+    for x0, y0, x1, y1, word, block, line, _ in words:
+        bottom, height = lines[(block, line)]
+        word = word.encode('cp1252', 'replace').decode('cp1252')  # a fonte padrão só tem esses caracteres
+        start = pymupdf.Point(x0, bottom - 0.2 * height)
+        stretch = (x1 - x0) / pymupdf.get_text_length(word, 'helv', height)  # ocupa a largura da palavra
+        page.insert_text(start, word + ' ', fontsize=height, fontname='helv', render_mode=3,
+                         morph=(start, pymupdf.Matrix(stretch, 1)))
+
+
+def ocr_pdf(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    tessdata = find_tessdata()
+    languages = [lang for lang in ('por', 'eng') if tessdata and Path(tessdata, f'{lang}.traineddata').exists()]
+    if 'por' not in languages:
+        raise UserError("O OCR precisa do Tesseract instalado com o idioma português. Veja as instruções no README.")
+    recognized = 0
+    for page in doc:
+        if page.get_text().strip():
+            continue  # a página já tem texto
+        page.remove_rotation()  # mesma aparência, mas com coordenadas iguais às que o OCR devolve
+        textpage = page.get_textpage_ocr(dpi=300, language='+'.join(languages), tessdata=tessdata, full=True)
+        add_invisible_text(page, page.get_text('words', textpage=textpage))
+        recognized += 1
+    if not recognized:
+        raise UserError("Todas as páginas deste PDF já têm texto: não há o que reconhecer.")
+    return pdf_bytes(doc), f"{base}_ocr.pdf", f"Texto reconhecido em {recognized} página(s)."
+
+
 def format_size(size):
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
 
@@ -401,6 +449,7 @@ IMAGES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff')
 ACTIONS = {
     "merge-pdf": (merge_pdf, PDF, True),
     "compress-pdf": (compress_pdf, PDF, False),
+    "ocr-pdf": (ocr_pdf, PDF, False),
     "protect-pdf": (protect_pdf, PDF, False),
     "unlock-pdf": (unlock_pdf, PDF, False),
     "watermark-pdf": (watermark_pdf, PDF, False),
