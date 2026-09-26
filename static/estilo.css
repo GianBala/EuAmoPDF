@@ -237,6 +237,10 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
     font: inherit;
 }
 
+.estimate { margin: 0; font-weight: 600; }
+.field:has(.estimate:empty) { display: none; }
+.estimate.calculating { color: var(--muted); font-weight: 400; }
+
 .hint {
     margin: 16px 0 0;
     padding: 10px 12px;

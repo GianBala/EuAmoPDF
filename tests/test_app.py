@@ -407,6 +407,67 @@ def test_compress_image_rejects_other_files(client, name, content):
     assert compress_image(client, (name, content)).status_code == 400
 
 
+def estimate(client, action, *files, **form):
+    r = client.post("/estimate", data={"action": action, "file": [(io.BytesIO(c), n) for n, c in files], **form},
+                    content_type="multipart/form-data")
+    return r
+
+
+@pytest.mark.parametrize("form", [
+    {"image_level": "recomendada"},
+    {"image_level": "extrema", "image_format": "webp"},
+    {"image_level": "forte", "image_format": "png", "max_size": "1280"},
+    {"image_level": "leve", "max_size": "800"},
+])
+def test_image_estimate_is_close_to_the_real_result(client, form):
+    photos = [("a.jpg", make_photo((3000, 2000))), ("b.jpg", make_photo((1600, 1200), quality=80))]  # a primeira passa pelo mosaico
+    r = estimate(client, "compress-image", *photos, **form)
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["antes"] == sum(len(content) for _, content in photos)
+    real = sum(len(data) for data in unzip(compress_image(client, *photos, **form).data).values())
+    assert body["depois"] == pytest.approx(real, rel=0.2)
+
+
+def test_image_estimate_never_exceeds_an_original_that_stays(client):
+    small = make_photo((400, 300), quality=30)
+    body = estimate(client, "compress-image", ("leve.jpg", small), image_level="leve").get_json()
+    assert body["depois"] == len(small)
+
+
+@pytest.mark.parametrize("level", ["recomendada", "forte"])
+def test_pdf_estimate_is_close_to_the_real_result(client, level):
+    doc = pymupdf.open()
+    for dpi in (200, 250, 150):  # três páginas escaneadas, cada uma numa resolução
+        doc.insert_pdf(pymupdf.open(stream=make_scan_pdf(dpi), filetype="pdf"))
+    pdf = doc.tobytes()
+    body = estimate(client, "compress-pdf", ("scan.pdf", pdf), level=level).get_json()
+    real = len(post(client, "compress-pdf", ("scan.pdf", pdf), level=level).data)
+    assert body["antes"] == len(pdf)
+    assert body["depois"] == pytest.approx(real, rel=0.1)
+
+
+def test_pdf_estimate_never_exceeds_the_original(client):
+    pdf = make_pdf(1, garbage=4, deflate=True, clean=True, use_objstms=1)
+    body = estimate(client, "compress-pdf", ("texto.pdf", pdf)).get_json()
+    assert body["depois"] <= body["antes"]
+
+
+@pytest.mark.parametrize("action, files, status", [
+    ("merge-pdf", [("a.pdf", make_pdf())], 400),                       # ferramenta sem estimativa
+    ("compress-pdf", [("a.pdf", b"lixo")], 400),                       # arquivo inválido
+    ("compress-pdf", [("a.pdf", make_pdf(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="1", owner_pw="1"))], 400),
+    ("compress-image", [("a.gif", make_image(fmt="GIF"))], 400),       # tipo não aceito
+])
+def test_estimate_rejects_what_the_tool_would_reject(client, action, files, status):
+    assert estimate(client, action, *files).status_code == status
+
+
+def test_spread_picks_items_across_the_list():
+    assert euamopdf.spread(list(range(10)), 3) == [0, 3, 6]
+    assert euamopdf.spread([1, 2], 3) == [1, 2]
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):

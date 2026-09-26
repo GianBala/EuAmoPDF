@@ -5,12 +5,14 @@ import io
 import json
 import math
 import os
+import random
 import re
 import sys
 import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import webbrowser # Biblioteca para abrir o navegador
 import zipfile
 from pathlib import Path
@@ -220,11 +222,14 @@ def on_white(img):
     return bg
 
 
-def open_image(path):
-    """Abre a imagem já na orientação da foto. Devolve (imagem, formato original, dados do arquivo)."""
+def open_image(path, reduce_to=None):
+    """Abre a imagem já na orientação da foto: (imagem, formato original). Com reduce_to, um JPEG
+    grande é decodificado direto num tamanho menor (mas ainda o dobro de reduce_to): bem mais rápido."""
     try:
         with Image.open(path) as original:
             fmt = 'JPEG' if original.format == 'MPO' else original.format  # MPO: JPEG de alguns celulares
+            if reduce_to:
+                original.draft(original.mode, (reduce_to * 2, reduce_to * 2))
             img = ImageOps.exif_transpose(original)
             img.load()
     except Exception:
@@ -554,10 +559,17 @@ IMAGE_EXTENSIONS = {'JPEG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}
 MAX_SIDES = {'2560': 2560, '1920': 1920, '1280': 1280, '800': 800}
 
 
-def compress_image(path, level, max_side, target, strip_metadata):
-    """Devolve (bytes, extensão, se ficou como estava)."""
-    quality, colors = IMAGE_LEVELS[level]
-    img, fmt = open_image(path)
+def image_settings(form):
+    """Opções do Comprimir imagem: (qualidade, cores do PNG, lado máximo, formato, remover dados da foto)."""
+    level = form.get('image_level') if form.get('image_level') in IMAGE_LEVELS else 'recomendada'
+    return (*IMAGE_LEVELS[level], MAX_SIDES.get(form.get('max_size')),
+            form.get('image_format', '').upper(), bool(form.get('strip_metadata')))
+
+
+def prepare_image(path, max_side, target, strip_metadata):
+    """A imagem já reduzida e o que é preciso para gravá-la:
+    (imagem, formato final, opções de gravação, se muda algo além da compressão)."""
+    img, fmt = open_image(path, reduce_to=max_side)
     out_fmt = target if target in IMAGE_EXTENSIONS else fmt if fmt in IMAGE_EXTENSIONS else 'PNG'
     resized = bool(max_side) and max(img.size) > max_side
     if resized:
@@ -569,36 +581,42 @@ def compress_image(path, level, max_side, target, strip_metadata):
     has_exif = bool(img.getexif())
     if has_exif and not strip_metadata:
         options['exif'] = img.getexif()  # a orientação já foi aplicada e retirada
+    return img, out_fmt, options, out_fmt != fmt or resized or (has_exif and strip_metadata)
 
+
+def encode_image(img, fmt, quality, colors, options=None, fast_png=False):
+    options = options or {}
     buf = io.BytesIO()
-    if out_fmt == 'JPEG':
+    if fmt == 'JPEG':
         on_white(img).save(buf, 'JPEG', quality=quality, optimize=True, progressive=True, **options)
-    elif out_fmt == 'WEBP':
+    elif fmt == 'WEBP':
         img.convert('RGBA' if has_alpha(img) else 'RGB').save(buf, 'WEBP', quality=quality, method=6, **options)
     else:
         img = img.convert('RGBA' if has_alpha(img) else 'RGB')
         if colors:  # PNG com menos cores, como faz o TinyPNG
             method = Image.Quantize.FASTOCTREE if img.mode == 'RGBA' else Image.Quantize.MEDIANCUT
             img = img.quantize(colors, method=method, dither=Image.Dither.FLOYDSTEINBERG)
-        img.save(buf, 'PNG', optimize=True, **options)
+        img.save(buf, 'PNG', **({'compress_level': 6} if fast_png else {'optimize': True}), **options)
+    return buf.getvalue()
 
-    data = buf.getvalue()
+
+def compress_image(path, settings):
+    """Devolve (bytes, extensão, se ficou como estava)."""
+    quality, colors, max_side, target, strip_metadata = settings
+    img, fmt, options, changed = prepare_image(path, max_side, target, strip_metadata)
+    data = encode_image(img, fmt, quality, colors, options)
     # Se não deu para diminuir e não havia nada a mudar (formato, tamanho, dados da foto), fica o original
-    if len(data) >= path.stat().st_size and out_fmt == fmt and not resized and not (has_exif and strip_metadata):
+    if len(data) >= path.stat().st_size and not changed:
         return path.read_bytes(), IMAGE_EXTENSIONS[fmt], True
-    return data, IMAGE_EXTENSIONS[out_fmt], False
+    return data, IMAGE_EXTENSIONS[fmt], False
 
 
 def compress_images(files, form, tmp):
-    level = form.get('image_level') if form.get('image_level') in IMAGE_LEVELS else 'recomendada'
-    max_side = MAX_SIDES.get(form.get('max_size'))
-    target = form.get('image_format', '').upper()
-    strip_metadata = bool(form.get('strip_metadata'))
-
+    settings = image_settings(form)
     results, used, kept = [], set(), 0
     before = after = 0
     for path, base in files:
-        data, ext, unchanged = compress_image(path, level, max_side, target, strip_metadata)
+        data, ext, unchanged = compress_image(path, settings)
         name, n = f"{base}_comprimida{ext}", 2
         while name in used:  # duas imagens com o mesmo nome não podem se sobrescrever no ZIP
             name, n = f"{base}_comprimida_{n}{ext}", n + 1
@@ -624,6 +642,91 @@ def compress_images(files, form, tmp):
         for name, data in results:
             z.writestr(name, data)
     return buf.getvalue(), "Imagens_comprimidas.zip", message
+
+
+# --- ESTIMATIVA DE TAMANHO ---
+# Rápida o bastante para rodar a cada mudança de opção: comprime de verdade só uma amostra
+# e extrapola. Devolve (tamanho atual, tamanho estimado) em bytes.
+
+def spread(items, n):
+    """Até n itens espalhados pela lista."""
+    return items if len(items) <= n else [items[i * len(items) // n] for i in range(n)]
+
+
+# O optimize do PNG deixa o arquivo ~5% menor que o nível padrão, mas é 5 a 10 vezes mais lento
+PNG_OPTIMIZE_GAIN = 0.95
+
+
+def mosaic(img, tile=64, grid=23):
+    """Pedaços espalhados pela imagem, montados numa amostra de ~2 MP: (amostra, quantas vezes a
+    imagem é maior que ela). Imagens pequenas vão inteiras. Com fotos reais, o erro médio da
+    estimativa fica em ~5%; pedaços maiores (e em menor número) erram mais."""
+    w, h = img.size
+    if w * h <= 2 * (tile * grid) ** 2:
+        return img, 1
+    img = img.convert('RGBA' if has_alpha(img) else 'L' if img.mode == 'L' else 'RGB')
+    sample = Image.new(img.mode, (tile * grid, tile * grid))
+    for i in range(grid):
+        for j in range(grid):
+            x, y = (w - tile) * i // (grid - 1), (h - tile) * j // (grid - 1)
+            sample.paste(img.crop((x, y, x + tile, y + tile)), (i * tile, j * tile))
+    return sample, w * h / (tile * grid) ** 2
+
+
+def estimate_image(path, settings):
+    quality, colors, max_side, target, strip_metadata = settings
+    img, fmt, options, changed = prepare_image(path, max_side, target, strip_metadata)
+    sample, scale = mosaic(img)
+    # Perfil de cor e EXIF não crescem com a imagem: entram uma vez só
+    extra = sum(len(value if isinstance(value, bytes) else value.tobytes()) for value in options.values())
+    lossless_png = fmt == 'PNG' and not colors
+    size = len(encode_image(sample, fmt, quality, colors, fast_png=lossless_png)) * scale + extra
+    if lossless_png:
+        size *= PNG_OPTIMIZE_GAIN
+    before = path.stat().st_size
+    return before if size >= before and not changed else size  # como no compress_image
+
+
+ESTIMATE_SECONDS = 2  # tempo para estimar imagens; as que não couberem são extrapoladas
+
+
+def estimate_images(files, form):
+    settings = image_settings(form)
+    sample_before = sample_after = 0
+    deadline = time.monotonic() + ESTIMATE_SECONDS
+    for path, _ in random.Random(0).sample(files, len(files)):  # embaralhada: a amostra fica espalhada
+        sample_before += path.stat().st_size
+        sample_after += estimate_image(path, settings)
+        if time.monotonic() > deadline:
+            break
+    before = sum(path.stat().st_size for path, _ in files)
+    return before, before * sample_after / sample_before
+
+
+def estimate_pdf(files, form):
+    path, _ = files[0]
+    doc = open_pdf(path)
+    target_dpi, quality = PDF_LEVELS.get(form.get('level'), PDF_LEVELS['recomendada'])
+    images = pdf_images(doc)
+    raw = {xref: len(doc.xref_stream_raw(xref)) for xref in images}
+    sample = spread(list(images.items()), 8)
+    sample_before = sum(raw[xref] for xref, _ in sample)
+    sample_after = 0
+    for xref, (_, width, height, dpi) in sample:
+        smaller = shrink_pdf_image(doc, xref, width, height, dpi, target_dpi, quality)
+        sample_after += len(smaller) if smaller else raw[xref]
+    # O PDF limpo como o compress_pdf grava, trocando o tamanho das imagens pelo estimado
+    cleaned = len(doc.tobytes(garbage=4, deflate=True, clean=True, use_objstms=1))
+    images_before = sum(raw.values())
+    after = cleaned - images_before + images_before * (sample_after / sample_before if sample_before else 1)
+    before = path.stat().st_size
+    return before, min(before, after)  # o compress_pdf devolve o original quando não diminui
+
+
+ESTIMATORS = {
+    'compress-pdf': estimate_pdf,
+    'compress-image': estimate_images,
+}
 
 
 PDF = ('.pdf',)
@@ -740,6 +843,15 @@ def handle_conversion():
     if message:  # cabeçalhos HTTP só aceitam ASCII
         response.headers['X-Mensagem'] = quote(message[0])
     return response
+
+@app.route('/estimate', methods=['POST'])
+def estimate_size():
+    """Tamanho aproximado do resultado das ferramentas de compressão, com as opções escolhidas."""
+    action = request.form.get('action')
+    if action not in ESTIMATORS:
+        raise UserError("Esta ferramenta não tem estimativa de tamanho.")
+    before, after = process_uploads(action, lambda saved, tmp: ESTIMATORS[action](saved, request.form))
+    return {'antes': before, 'depois': round(after)}
 
 def free_port(preferred=5000):
     """Usa a porta preferida se estiver livre; senão, qualquer porta livre."""

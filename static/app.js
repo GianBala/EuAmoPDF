@@ -13,6 +13,9 @@ let dragged = null; // índice da miniatura sendo arrastada
 
 document.querySelectorAll('.tool').forEach((button) => button.addEventListener('click', () => openTool(button)));
 $('close').addEventListener('click', () => dialog.close());
+dialog.addEventListener('close', () => scheduleEstimate(false));
+// Mudou alguma opção (e não o arquivo): recalcula a estimativa de tamanho
+form.addEventListener('change', (event) => { if (event.target !== input) scheduleEstimate(); });
 
 function openTool(button) {
     tool = button.dataset;
@@ -99,6 +102,7 @@ function render() {
     submit.disabled = files.length === 0;
     updateDropText();
     showPageInfo();
+    scheduleEstimate();
 }
 
 function updateDropText() {
@@ -242,9 +246,7 @@ form.addEventListener('submit', async (event) => {
         }
         $('order').value = JSON.stringify(pages.map(({ pagina, giro }) => ({ pagina, giro })));
     }
-    const data = new FormData(form);
-    data.append('action', tool.action);
-    files.forEach((file) => data.append('file', file));
+    const data = formData();
 
     setBusy(true);
     setStatus('');
@@ -263,6 +265,52 @@ form.addEventListener('submit', async (event) => {
         setBusy(false);
     }
 });
+
+function formData() {
+    const data = new FormData(form);
+    data.append('action', tool.action);
+    files.forEach((file) => data.append('file', file));
+    return data;
+}
+
+// --- Estimativa de tamanho (ferramentas de compressão) ---
+
+let estimateTimer = null;
+let estimateRequest = null;  // AbortController da estimativa em andamento
+
+function scheduleEstimate(active = dialog.open) {
+    clearTimeout(estimateTimer);
+    estimateRequest?.abort();
+    const box = $('estimate');
+    if (!active || !tool.fields.split(' ').includes('estimate') || !files.length) {
+        box.textContent = '';
+        return;
+    }
+    box.textContent = 'Calculando o tamanho final…';
+    box.classList.add('calculating');
+    estimateTimer = setTimeout(requestEstimate, 400);  // espera o usuário terminar de mexer nas opções
+}
+
+async function requestEstimate() {
+    const box = $('estimate');
+    const controller = new AbortController();
+    estimateRequest = controller;
+    try {
+        const response = await fetch('/estimate', { method: 'POST', body: formData(), signal: controller.signal });
+        if (!response.ok) {
+            box.textContent = await response.text();  // ex.: PDF com senha, arquivo inválido
+        } else {
+            const { antes, depois } = await response.json();
+            const percent = Math.round((1 - depois / antes) * 100);
+            box.textContent = percent > 0
+                ? `Tamanho estimado: ~${formatSize(depois)} (hoje ${formatSize(antes)}, ${percent}% menor)`
+                : `Tamanho estimado: ~${formatSize(antes)}. Com estas opções, o arquivo praticamente não diminui.`;
+        }
+        box.classList.remove('calculating');
+    } catch (error) {
+        if (error.name !== 'AbortError') box.textContent = '';
+    }
+}
 
 function fileName(response) {
     const header = response.headers.get('Content-Disposition') || '';
