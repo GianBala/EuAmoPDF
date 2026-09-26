@@ -697,16 +697,18 @@ def estimate_image(path, settings):
 
 
 ESTIMATE_SECONDS = 2  # tempo para estimar imagens; as que não couberem são extrapoladas
+ESTIMATE_MIN_IMAGES = 3  # mesmo passando do tempo: extrapolar de uma imagem só erra muito num lote misturado
 
 
 def estimate_images(files, form):
     settings = image_settings(form)
     sample_before = sample_after = 0
     deadline = time.monotonic() + ESTIMATE_SECONDS
-    for path, _ in random.Random(0).sample(files, len(files)):  # embaralhada: a amostra fica espalhada
+    order = random.Random(0).sample(files, len(files))  # embaralhada: a amostra fica espalhada
+    for count, (path, _) in enumerate(order, 1):
         sample_before += path.stat().st_size
         sample_after += estimate_image(path, settings)
-        if time.monotonic() > deadline:
+        if count >= ESTIMATE_MIN_IMAGES and time.monotonic() > deadline:
             break
     before = sum(path.stat().st_size for path, _ in files)
     return before, before * sample_after / sample_before
