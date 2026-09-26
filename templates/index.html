@@ -43,6 +43,16 @@
     </section>
 
     <section>
+        <h2>Segurança</h2>
+        <div class="grid">
+            {{ tool('protect-pdf', '🔒', 'Proteger PDF', 'Exija uma senha para abrir o arquivo.', 'password password2',
+                    'Guarde a senha: sem ela não dá para abrir o PDF, nem aqui.') }}
+            {{ tool('unlock-pdf', '🔓', 'Remover senha', 'Tire a senha e as restrições de um PDF.', 'password',
+                    'Se o PDF abre sem senha e só bloqueia impressão ou cópia, deixe a senha em branco.') }}
+        </div>
+    </section>
+
+    <section>
         <h2>Converter para PDF</h2>
         <div class="grid">
             {{ tool('jpg-to-pdf', '🖼️', 'Imagens para PDF', 'JPG, PNG e outras, uma por página A4.') }}
@@ -93,6 +103,14 @@
                 <option value="270">90° para a esquerda ↺</option>
                 <option value="180">180° (de cabeça para baixo)</option>
             </select>
+        </div>
+        <div class="field" data-field="password" hidden>
+            <label for="password">Senha</label>
+            <input type="password" name="password" id="password" autocomplete="off">
+        </div>
+        <div class="field" data-field="password2" hidden>
+            <label for="password2">Repita a senha</label>
+            <input type="password" name="password2" id="password2" autocomplete="off">
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>
