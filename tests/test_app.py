@@ -429,6 +429,15 @@ def test_image_estimate_is_close_to_the_real_result(client, form):
     assert body["depois"] == pytest.approx(real, rel=0.2)
 
 
+def test_image_estimate_samples_at_least_three_images(client, monkeypatch):
+    monkeypatch.setattr(euamopdf, "ESTIMATE_SECONDS", 0)  # prazo esgotado já na primeira imagem
+    files = [("foto.jpg", make_photo((1600, 1200))), ("logo.png", make_photo((600, 600), fmt="PNG", mode="RGBA"))]
+    form = {"image_level": "forte", "image_format": "webp"}
+    body = estimate(client, "compress-image", *files, **form).get_json()
+    real = sum(len(data) for data in unzip(compress_image(client, *files, **form).data).values())
+    assert body["depois"] == pytest.approx(real, rel=0.15)
+
+
 def test_image_estimate_never_exceeds_an_original_that_stays(client):
     small = make_photo((400, 300), quality=30)
     body = estimate(client, "compress-image", ("leve.jpg", small), image_level="leve").get_json()
