@@ -21,4 +21,13 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress tesseract-ocr tesseract-ocr-por
       - run: pip install -r requirements-dev.txt
+      - name: Guardar o modelo de remover fundo entre execuções
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/euamopdf
+          key: modelo-isnet-60920e99c454
+      - name: Baixar o modelo de remover fundo (170 MB, só sem cache)
+        if: runner.os == 'Linux'
+        run: python -c "import app; p = app.bg_model_path(); p.exists() or app.download_bg_model(p)"
       - run: pytest -v
