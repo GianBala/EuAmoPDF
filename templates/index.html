@@ -37,6 +37,29 @@
     </section>
 
     <section>
+        <h2>Converter para PDF</h2>
+        <div class="grid">
+            {{ tool('jpg-to-pdf', '🖼️', 'Imagens para PDF', 'JPG, PNG e outras, uma por página A4.') }}
+            {{ tool('word-to-pdf', '📘', 'Word para PDF', 'Documentos .docx, .doc, .odt e .rtf.') }}
+            {{ tool('ppt-to-pdf', '📙', 'PowerPoint para PDF', 'Apresentações .pptx, .ppt e .odp.') }}
+            {{ tool('excel-to-pdf', '📗', 'Excel para PDF', 'Planilhas .xlsx, .xls, .ods e .csv.') }}
+        </div>
+    </section>
+
+    <section>
+        <h2>Converter de PDF</h2>
+        <div class="grid">
+            {{ tool('pdf-to-jpg', '🖼️', 'PDF para JPG', 'Uma imagem por página.', 'dpi') }}
+            {{ tool('pdf-to-word', '📘', 'PDF para Word', 'Documento editável no Word.', '',
+                    'Funciona com PDFs que têm texto. PDFs escaneados precisam de OCR antes.') }}
+            {{ tool('pdf-to-ppt', '📙', 'PDF para PowerPoint', 'Um slide por página.', '',
+                    'Cada página vira uma imagem no slide: o texto não fica editável.') }}
+            {{ tool('pdf-to-excel', '📗', 'PDF para Excel', 'Extrai as tabelas para uma planilha.', '',
+                    'Cada tabela encontrada vira uma aba da planilha.') }}
+        </div>
+    </section>
+
+    <section>
         <h2>Otimizar</h2>
         <div class="grid">
             {{ tool('compress-pdf', '🗜️', 'Comprimir PDF', 'Diminua o tamanho do arquivo.', 'level',
@@ -62,29 +85,6 @@
                     'Guarde a senha: sem ela não dá para abrir o PDF, nem aqui.') }}
             {{ tool('unlock-pdf', '🔓', 'Remover senha', 'Tire a senha e as restrições de um PDF.', 'password',
                     'Se o PDF abre sem senha e só bloqueia impressão ou cópia, deixe a senha em branco.') }}
-        </div>
-    </section>
-
-    <section>
-        <h2>Converter para PDF</h2>
-        <div class="grid">
-            {{ tool('jpg-to-pdf', '🖼️', 'Imagens para PDF', 'JPG, PNG e outras, uma por página A4.') }}
-            {{ tool('word-to-pdf', '📘', 'Word para PDF', 'Documentos .docx, .doc, .odt e .rtf.') }}
-            {{ tool('ppt-to-pdf', '📙', 'PowerPoint para PDF', 'Apresentações .pptx, .ppt e .odp.') }}
-            {{ tool('excel-to-pdf', '📗', 'Excel para PDF', 'Planilhas .xlsx, .xls, .ods e .csv.') }}
-        </div>
-    </section>
-
-    <section>
-        <h2>Converter de PDF</h2>
-        <div class="grid">
-            {{ tool('pdf-to-jpg', '🖼️', 'PDF para JPG', 'Uma imagem por página.', 'dpi') }}
-            {{ tool('pdf-to-word', '📘', 'PDF para Word', 'Documento editável no Word.', '',
-                    'Funciona com PDFs que têm texto. PDFs escaneados precisam de OCR antes.') }}
-            {{ tool('pdf-to-ppt', '📙', 'PDF para PowerPoint', 'Um slide por página.', '',
-                    'Cada página vira uma imagem no slide: o texto não fica editável.') }}
-            {{ tool('pdf-to-excel', '📗', 'PDF para Excel', 'Extrai as tabelas para uma planilha.', '',
-                    'Cada tabela encontrada vira uma aba da planilha.') }}
         </div>
     </section>
 </main>
