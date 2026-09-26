@@ -352,6 +352,27 @@ def watermark_pdf(files, form, tmp):
     return pdf_bytes(doc), f"{base}_marca_dagua.pdf"
 
 
+NUMBER_FORMATS = {
+    'n': "{n}",
+    'n-de-t': "{n} / {t}",
+    'pagina': "Página {n} de {t}",
+}
+
+
+def number_pages(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    label = NUMBER_FORMATS.get(form.get('format'), NUMBER_FORMATS['n'])
+    for page in doc:
+        text = label.format(n=page.number + 1, t=doc.page_count)
+        r = page.rect  # área visível, já considerando a rotação da página
+        x = (r.width - pymupdf.get_text_length(text, 'helv', 10)) / 2
+        # Centralizado no rodapé como o usuário vê, mesmo em páginas giradas
+        page.insert_text(pymupdf.Point(x, r.height - 20) * page.derotation_matrix, text,
+                         fontsize=10, fontname='helv', rotate=page.rotation)
+    return pdf_bytes(doc), f"{base}_numerado.pdf"
+
+
 def format_size(size):
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
 
@@ -383,6 +404,7 @@ ACTIONS = {
     "protect-pdf": (protect_pdf, PDF, False),
     "unlock-pdf": (unlock_pdf, PDF, False),
     "watermark-pdf": (watermark_pdf, PDF, False),
+    "number-pages": (number_pages, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
     "rotate-pdf": (rotate_pdf, PDF, False),
     "word-to-pdf": (office_action("Word.Application"), WORD, False),
