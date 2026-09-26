@@ -1,5 +1,7 @@
 from flask import Flask, render_template, request, send_file
+import base64
 import io
+import json
 import os
 import re
 import sys
@@ -304,6 +306,31 @@ def pdf_to_ppt(files, form, tmp):
     return buf.getvalue(), f"{base}.pptx"
 
 
+def organize_pdf(files, form, tmp):
+    """Monta o PDF na ordem que o usuário escolheu nas miniaturas: [{"pagina": 3, "giro": 90}, ...]."""
+    path, base = files[0]
+    doc = open_pdf(path)
+    try:
+        order = [(int(item['pagina']), int(item.get('giro', 0))) for item in json.loads(form.get('order', ''))]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise UserError("Não entendi a nova ordem das páginas.")
+    if not order:
+        raise UserError("Deixe ao menos uma página.")
+    out = pymupdf.open()
+    for number, turn in order:
+        if not 1 <= number <= doc.page_count or turn % 90:
+            raise UserError("Não entendi a nova ordem das páginas.")
+        out.insert_pdf(doc, from_page=number - 1, to_page=number - 1)
+        out[-1].set_rotation((out[-1].rotation + turn) % 360)
+    return pdf_bytes(out), f"{base}_organizado.pdf"
+
+
+def thumbnail(page, width=150):
+    zoom = width / page.rect.width
+    jpg = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes('jpg', jpg_quality=70)
+    return 'data:image/jpeg;base64,' + base64.b64encode(jpg).decode()
+
+
 def rotate_pdf(files, form, tmp):
     path, base = files[0]
     doc = open_pdf(path)
@@ -456,6 +483,7 @@ ACTIONS = {
     "number-pages": (number_pages, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
     "rotate-pdf": (rotate_pdf, PDF, False),
+    "organize-pdf": (organize_pdf, PDF, False),
     "word-to-pdf": (office_action("Word.Application"), WORD, False),
     "excel-to-pdf": (office_action("Excel.Application"), EXCEL, False),
     "ppt-to-pdf": (office_action("PowerPoint.Application"), POWERPOINT, False),
@@ -488,13 +516,17 @@ def index():
 
 @app.route('/pages', methods=['POST'])
 def page_info():
-    """Número de páginas do PDF escolhido, que a interface mostra antes da conversão."""
+    """Número de páginas do PDF escolhido e, se pedidas, as miniaturas para organizar."""
     f = request.files.get('file')
     try:
         doc = open_pdf(f.read() if f else b'')
     except UserError as e:
         return {'erro': str(e)}, 400
-    return {'paginas': doc.page_count}
+    info = {'paginas': doc.page_count}
+    if request.form.get('miniaturas'):
+        # ponytail: todas as miniaturas numa resposta só; paginar se PDFs de centenas de páginas ficarem lentos
+        info['miniaturas'] = [thumbnail(page) for page in doc]
+    return info
 
 def check_uploads(files, accepted, multiple):
     if not files:

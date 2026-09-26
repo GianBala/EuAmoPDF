@@ -123,6 +123,7 @@ dialog {
     border-radius: 16px;
     background: var(--surface);
     color: var(--text);
+    overflow: auto;
 }
 
 dialog::backdrop { background: rgb(0 0 0 / 0.45); }
@@ -184,6 +185,43 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .file-list .size { color: var(--muted); font-size: 0.85rem; margin-right: 6px; }
 
 .field { margin-top: 16px; }
+
+.organizer {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    gap: 10px;
+}
+
+.page-card {
+    margin: 0;
+    padding: 8px 4px 4px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg);
+    text-align: center;
+    cursor: grab;
+}
+
+.page-card.dragging { opacity: 0.4; }
+
+.page-thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 110px;
+}
+
+.page-thumb img {
+    max-width: 100px;
+    max-height: 100px;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+    background: #fff;
+    transition: transform 0.15s;
+}
+
+.page-card figcaption { font-size: 0.85rem; color: var(--muted); }
+.page-actions { display: flex; justify-content: center; }
+.page-actions .icon-button { padding: 2px 4px; }
 .field label { display: block; font-weight: 600; margin-bottom: 6px; }
 
 .field input, .field select {

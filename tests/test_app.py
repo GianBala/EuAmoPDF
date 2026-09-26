@@ -243,6 +243,27 @@ def test_ocr_without_tesseract_explains_what_to_install(client, monkeypatch):
     assert "Tesseract" in r.get_data(as_text=True)
 
 
+def test_organize_reorders_rotates_duplicates_and_deletes(client):
+    order = '[{"pagina": 3, "giro": 90}, {"pagina": 1}, {"pagina": 1, "giro": -90}]'
+    r = post(client, "organize-pdf", ("doc.pdf", make_pdf(3)), order=order)
+    assert texts(r.data) == ["Pagina 3", "Pagina 1", "Pagina 1"]
+    assert rotations(r.data) == [90, 0, 270]
+
+
+@pytest.mark.parametrize("order", ["", "[]", "nao e json", "[1, 2]", '[{"pagina": 4}]', '[{"pagina": 0}]',
+                                   '[{"pagina": 1, "giro": 45}]', '{"pagina": 1}', '[{"page": 1}]'])
+def test_organize_rejects_invalid_order(client, order):
+    assert post(client, "organize-pdf", ("doc.pdf", make_pdf(3)), order=order).status_code == 400
+
+
+def test_page_thumbnails(client):
+    r = client.post("/pages", data={"file": (io.BytesIO(make_pdf(2)), "a.pdf"), "miniaturas": "1"},
+                    content_type="multipart/form-data")
+    thumbs = r.get_json()["miniaturas"]
+    assert len(thumbs) == 2
+    assert all(t.startswith("data:image/jpeg;base64,") for t in thumbs)
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):
