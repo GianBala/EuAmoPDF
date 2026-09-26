@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import shutil
+import socket
 import subprocess
 import tempfile
 import webbrowser # Biblioteca para abrir o navegador
@@ -315,11 +316,17 @@ def handle_conversion():
 
     return send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
 
-def open_browser():
-    """Abre o navegador no endereço local"""
-    webbrowser.open_new("http://127.0.0.1:5000/")
+def free_port(preferred=5000):
+    """Usa a porta preferida se estiver livre; senão, qualquer porta livre."""
+    with socket.socket() as s:
+        try:
+            s.bind(('127.0.0.1', preferred))
+        except OSError:
+            s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
 
 if __name__ == '__main__':
+    port = free_port()
     # O Timer aguarda 1 segundo para garantir que o servidor Flask já subiu
-    Timer(1, open_browser).start()
-    app.run(host='127.0.0.1', port=5000)
+    Timer(1, webbrowser.open_new, [f"http://127.0.0.1:{port}/"]).start()
+    app.run(host='127.0.0.1', port=port)
