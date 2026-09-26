@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, send_file
+from werkzeug.exceptions import HTTPException
 import base64
 import io
 import json
@@ -699,32 +700,42 @@ def check_uploads(files, accepted, multiple):
             raise UserError(f"\"{f.filename}\" não é do tipo aceito aqui ({', '.join(accepted)}).")
 
 
+def process_uploads(action, work):
+    """Valida os arquivos enviados para a ferramenta, grava numa pasta temporária e devolve
+    work(arquivos, pasta). A pasta é apagada ao fim, com o que houver dentro."""
+    if action not in ACTIONS:
+        raise UserError("Ferramenta desconhecida.")
+    _, accepted, multiple = ACTIONS[action]
+    files = [f for f in request.files.getlist('file') if f.filename]
+    check_uploads(files, accepted, multiple)
+    with tempfile.TemporaryDirectory(prefix='euamopdf-') as tmp:
+        tmp = Path(tmp)
+        saved = save_uploads(files, tmp)
+        if any(path.stat().st_size == 0 for path, _ in saved):
+            raise UserError("O arquivo enviado está vazio.")
+        return work(saved, tmp)
+
+
+@app.errorhandler(UserError)
+def user_error(e):
+    return str(e), 400
+
 @app.errorhandler(413)
 def too_large(e):
     return f"Arquivo grande demais: o limite é {MAX_UPLOAD_MB} MB.", 413
 
+@app.errorhandler(Exception)
+def unexpected_error(e):
+    if isinstance(e, HTTPException):
+        return e  # 404, 405...: a resposta padrão do Flask já serve
+    app.logger.exception("Falha em %s", request.form.get('action'))
+    return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500
+
 @app.route('/convert', methods=['POST'])
 def handle_conversion():
     action = request.form.get('action')
-    files = [f for f in request.files.getlist('file') if f.filename]
-    if action not in ACTIONS: return "Ferramenta desconhecida.", 400
-    handler, accepted, multiple = ACTIONS[action]
-
-    try:
-        check_uploads(files, accepted, multiple)
-        # Tudo acontece numa pasta temporária própria, apagada ao fim da requisição
-        with tempfile.TemporaryDirectory(prefix='euamopdf-') as tmp:
-            tmp = Path(tmp)
-            saved = save_uploads(files, tmp)
-            if any(path.stat().st_size == 0 for path, _ in saved):
-                raise UserError("O arquivo enviado está vazio.")
-            data, download_name, *message = handler(saved, request.form, tmp)
-    except UserError as e:
-        return str(e), 400
-    except Exception:
-        app.logger.exception("Falha em %s", action)
-        return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500
-
+    data, download_name, *message = process_uploads(
+        action, lambda saved, tmp: ACTIONS[action][0](saved, request.form, tmp))
     response = send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
     if message:  # cabeçalhos HTTP só aceitam ASCII
         response.headers['X-Mensagem'] = quote(message[0])
