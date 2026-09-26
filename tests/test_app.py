@@ -122,6 +122,21 @@ def test_pdf_to_excel_without_tables(client):
     assert "Nenhuma tabela" in r.get_data(as_text=True)
 
 
+def test_pdf_to_ppt_one_slide_per_page(client):
+    pptx = pytest.importorskip("pptx")
+    doc = pymupdf.open()
+    doc.new_page(width=842, height=595)  # A4 deitada
+    doc.new_page(width=595, height=842)  # A4 em pé: deve caber sem distorcer
+    r = post(client, "pdf-to-ppt", ("slides.pdf", doc.tobytes()))
+    assert r.status_code == 200
+    prs = pptx.Presentation(io.BytesIO(r.data))
+    assert len(prs.slides) == 2
+    assert prs.slide_width > prs.slide_height
+    picture = prs.slides[1].shapes[0]
+    assert picture.height == prs.slide_height
+    assert abs(picture.width / picture.height - 595 / 842) < 0.01
+
+
 # --- Converter para PDF ---
 
 def test_images_to_pdf_one_a4_page_per_image(client):
