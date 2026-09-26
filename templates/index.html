@@ -64,11 +64,17 @@
         <div class="grid">
             {{ tool('compress-pdf', '🗜️', 'Comprimir PDF', 'Diminua o tamanho do arquivo.', 'level estimate',
                     'A compressão reduz a resolução das imagens do PDF. O texto não perde qualidade.') }}
+            {{ tool('ocr-pdf', '🔍', 'OCR', 'Torne pesquisável o texto de um PDF escaneado.', '',
+                    'A aparência não muda: o texto reconhecido fica invisível por cima da imagem, para buscar e copiar. Páginas que já têm texto ficam como estão.') }}
+        </div>
+    </section>
+
+    <section>
+        <h2>Imagens</h2>
+        <div class="grid">
             {{ tool('compress-image', '📷', 'Comprimir imagem', 'Diminua fotos e imagens JPG, PNG e WebP.',
                     'image-level max-size image-format strip-metadata estimate',
                     'Imagens que já estão mais comprimidas do que o nível escolhido ficam como estão. Várias imagens saem num ZIP.') }}
-            {{ tool('ocr-pdf', '🔍', 'OCR', 'Torne pesquisável o texto de um PDF escaneado.', '',
-                    'A aparência não muda: o texto reconhecido fica invisível por cima da imagem, para buscar e copiar. Páginas que já têm texto ficam como estão.') }}
         </div>
     </section>
 
