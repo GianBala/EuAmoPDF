@@ -177,6 +177,25 @@ def test_watermark_rejects_invalid_text(client, text):
     assert post(client, "watermark-pdf", ("doc.pdf", make_pdf()), text=text).status_code == 400
 
 
+@pytest.mark.parametrize("fmt, expected", [("n", "2"), ("n-de-t", "2 / 3"), ("pagina", "Página 2 de 3")])
+def test_number_pages_formats(client, fmt, expected):
+    r = post(client, "number-pages", ("doc.pdf", make_pdf(3)), format=fmt)
+    page = pymupdf.open(stream=r.data, filetype="pdf")[1]
+    assert expected in [text for text, _, _ in visual_lines(page)]
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_number_pages_at_bottom_center_on_any_rotation(client, rotation):
+    doc = pymupdf.open()
+    doc.new_page().set_rotation(rotation)
+    r = post(client, "number-pages", ("doc.pdf", doc.tobytes()))
+    page = pymupdf.open(stream=r.data, filetype="pdf")[0]
+    [(text, direction, bbox)] = visual_lines(page)
+    assert (text, direction) == ("1", (1.0, 0.0))  # horizontal, como o usuário lê
+    assert bbox.y1 > page.rect.height - 30
+    assert abs(bbox.x0 + bbox.x1 - page.rect.width) < 5
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):

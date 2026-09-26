@@ -47,6 +47,7 @@
         <div class="grid">
             {{ tool('watermark-pdf', '💧', "Marca d'água", 'Escreva um texto na diagonal de todas as páginas.', 'text',
                     'O texto vai em cinza semitransparente, sem esconder o conteúdo da página.') }}
+            {{ tool('number-pages', '🔢', 'Numerar páginas', 'Coloque o número no rodapé de cada página.', 'format') }}
         </div>
     </section>
 
@@ -123,6 +124,14 @@
         <div class="field" data-field="text" hidden>
             <label for="text">Texto</label>
             <input type="text" name="text" id="text" placeholder="Ex.: CONFIDENCIAL" maxlength="100">
+        </div>
+        <div class="field" data-field="format" hidden>
+            <label for="format">Formato</label>
+            <select name="format" id="format">
+                <option value="n" selected>1, 2, 3…</option>
+                <option value="n-de-t">1 / 10</option>
+                <option value="pagina">Página 1 de 10</option>
+            </select>
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>
