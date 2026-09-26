@@ -45,6 +45,7 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 
 - **Comprimir imagens** JPG, PNG e WebP, uma ou várias de uma vez, com quatro níveis de compressão, tamanho máximo, troca de formato, remoção dos dados da foto (localização, câmera) e o tamanho final estimado
 - **Remover fundo** com IA, deixando só o objeto principal: fundo transparente, branco, preto ou de outra cor. A imagem mantém a resolução, as cores e os pixels originais do objeto, e sai sem perda (PNG ou WebP)
+- Antes de baixar, uma **prévia editável** mostra esmaecido o que foi removido. Pinte por cima de uma parte apagada por engano (**Restaurar**) ou de um pedaço de fundo que ficou (**Apagar**): não precisa ser preciso, porque o app estende o traço pelas cores e bordas da imagem
 
 ### ✏️ Editar e 🔒 Segurança
 
@@ -113,7 +114,7 @@ flowchart LR
 - **Um servidor local.** O `app.py` é um app Flask que só escuta em `127.0.0.1` e recusa requisições cujo `Host` ou `Origin` não seja local. Assim, um site aberto em outra aba não consegue usar o app.
 - **Nada fica no disco.** Cada conversão usa uma pasta temporária própria, grava os envios com nomes gerados pelo app (nunca com o nome que veio do navegador) e é apagada ao terminar. O resultado vai direto da memória para o download.
 - **O PyMuPDF faz o trabalho pesado:** juntar, dividir, girar, gerar imagens das páginas, comprimir, criptografar, escrever marca d'água e números, extrair tabelas e rodar o OCR pelo Tesseract.
-- **O remover fundo** roda o ISNet pelo `onnxruntime`: o modelo gera só a máscara do objeto, em 1024 × 1024, que é ampliada para o tamanho da imagem e vira o canal de transparência. Os pixels do objeto não são alterados, e os pixels totalmente transparentes são zerados, para o fundo removido não ficar escondido no arquivo.
+- **O remover fundo** roda o ISNet pelo `onnxruntime`: o modelo gera só a máscara do objeto, em 1024 × 1024, que é ampliada para o tamanho da imagem e vira o canal de transparência. Os pixels do objeto não são alterados, e os pixels totalmente transparentes são zerados, para o fundo removido não ficar escondido no arquivo. As correções da prévia usam o GrabCut do OpenCV num recorte em volta do traço: perto dele, parte do que foi pedido e decide pelas cores e bordas; longe dele, mantém a máscara do modelo onde ele teve certeza. Só muda a região ligada ao traço.
 - **A interface** (`templates/index.html`, `static/`) é HTML, CSS e JavaScript simples, sem bibliotecas nem CDN, então funciona sem internet. Ela tem modo escuro automático e dá para usar pelo teclado.
 
 ## Testes

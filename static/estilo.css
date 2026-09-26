@@ -33,6 +33,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* vale mesmo para elementos com display definido aqui */
 
 body {
     margin: 0;
@@ -186,6 +187,39 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .file-list .size { color: var(--muted); font-size: 0.85rem; margin-right: 6px; }
 
 .field { margin-top: 16px; }
+
+dialog.wide { width: min(1100px, calc(100vw - 32px)); }
+form.editing #drop, form.editing #file-list, form.editing #page-info { display: none; }
+
+.editor-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    margin-bottom: 12px;
+}
+
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.segmented .mode { border: 0; padding: 8px 14px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.segmented .mode[aria-pressed="true"][data-mode="restaurar"] { background: #1e7d45; color: #fff; }
+.segmented .mode[aria-pressed="true"][data-mode="apagar"] { background: #c0392b; color: #fff; }
+.brush { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.editor-nav { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+#back { margin-left: auto; }
+
+.stage {
+    position: relative;
+    margin: 0 auto;
+    border-radius: 8px;
+    overflow: hidden;
+    /* xadrez de transparência; a cor escolhida para o fundo substitui */
+    background: repeating-conic-gradient(#d9d9d9 0% 25%, #ffffff 0% 50%) 0 0 / 20px 20px;
+}
+.stage canvas { display: block; }
+#paint { position: absolute; inset: 0; cursor: crosshair; touch-action: none; opacity: 0.55; }
+.stage.working #paint { cursor: progress; }
+.editor-help { margin: 12px 0 0; font-size: 0.9rem; }
+.editor-status { margin: 4px 0 0; min-height: 1.5em; font-weight: 600; }
 
 .organizer {
     display: grid;

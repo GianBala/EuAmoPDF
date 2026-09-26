@@ -76,7 +76,7 @@
                     'image-level max-size image-format strip-metadata estimate',
                     'Imagens que já estão mais comprimidas do que o nível escolhido ficam como estão. Várias imagens saem num ZIP.') }}
             {{ tool('remove-background', '🪄', 'Remover fundo', 'Deixe só o objeto principal, com fundo transparente ou de outra cor.',
-                    'background bg-format',
+                    'background bg-format preview',
                     ('' if bg_model_ready else 'Na primeira vez, o EuAmoPDF baixa o modelo de IA (' ~ bg_model_mb ~ ' MB), o que pode levar alguns minutos; depois tudo funciona sem internet. ')
                     ~ 'A imagem mantém a resolução e as cores originais: só o fundo sai. Suas imagens não saem do computador.') }}
         </div>
@@ -117,6 +117,29 @@
         </label>
         <ul id="file-list" class="file-list"></ul>
         <p id="page-info" class="muted" hidden></p>
+
+        <div id="editor" class="editor" hidden>
+            <div class="editor-bar">
+                <div class="segmented" role="group" aria-label="Pincel">
+                    <button type="button" class="mode" data-mode="restaurar" aria-pressed="true">Restaurar</button>
+                    <button type="button" class="mode" data-mode="apagar" aria-pressed="false">Apagar</button>
+                </div>
+                <label class="brush">Pincel <input type="range" id="brush" min="6" max="120" value="30"></label>
+                <button type="button" class="icon-button" id="undo" disabled>↶ Desfazer</button>
+                <span class="editor-nav" id="editor-nav" hidden>
+                    <button type="button" class="icon-button" id="prev" aria-label="Imagem anterior">‹</button>
+                    <span id="editor-count"></span>
+                    <button type="button" class="icon-button" id="next" aria-label="Próxima imagem">›</button>
+                </span>
+                <button type="button" class="icon-button" id="back">Voltar</button>
+            </div>
+            <div class="stage" id="stage">
+                <canvas id="preview"></canvas>
+                <canvas id="paint"></canvas>
+            </div>
+            <p class="muted editor-help">Pinte por cima de uma parte apagada por engano (<strong>Restaurar</strong>) ou de um pedaço de fundo que ficou (<strong>Apagar</strong>). Não precisa ser preciso: o EuAmoPDF completa a área pelas cores e bordas. O que foi removido aparece esmaecido.</p>
+            <p id="editor-status" class="editor-status" aria-live="polite"></p>
+        </div>
 
         <div class="field" data-field="organizer" hidden>
             <input type="hidden" name="order" id="order">

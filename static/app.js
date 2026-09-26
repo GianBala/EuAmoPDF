@@ -83,6 +83,7 @@ window.addEventListener('dragover', (event) => event.preventDefault());
 window.addEventListener('drop', (event) => event.preventDefault());
 
 function render() {
+    resetEditor();  // mudaram os arquivos: a prévia antiga não vale mais
     const list = $('file-list');
     list.replaceChildren(...files.map((file, i) => {
         const item = document.createElement('li');
@@ -250,7 +251,12 @@ form.addEventListener('submit', async (event) => {
         }
         $('order').value = JSON.stringify(pages.map(({ pagina, giro }) => ({ pagina, giro })));
     }
+    if (previewing() && !edits) {
+        await startEditor();
+        return;
+    }
     const data = formData();
+    edits?.forEach((edit) => data.append('mascara', edit.mask, 'mascara.png'));  // na ordem dos arquivos
 
     setBusy(true);
     setStatus('');
@@ -316,6 +322,184 @@ async function requestEstimate() {
     }
 }
 
+// --- Remover fundo: prévia editável ---
+
+let edits = null;           // depois da prévia: [{file, mask: PNG da máscara, history: [máscaras anteriores]}]
+let current = 0;            // imagem aberta no editor
+let brushMode = 'restaurar';
+let bitmap = null;          // imagem aberta, decodificada
+let painting = null;        // último ponto do traço em andamento
+const paint = $('paint');
+
+function previewing() {
+    return tool.fields.split(' ').includes('preview');
+}
+
+function resetEditor() {
+    edits = null;
+    $('editor').hidden = true;
+    form.classList.remove('editing');
+    dialog.classList.remove('wide');
+    selectMode('restaurar');
+}
+
+async function startEditor() {
+    setBusy(true);
+    try {
+        const masks = [];
+        for (const [i, file] of files.entries()) {
+            setStatus(files.length > 1 ? `Removendo o fundo… (${i + 1} de ${files.length})` : 'Removendo o fundo…');
+            const data = new FormData();
+            data.append('action', tool.action);
+            data.append('file', file);
+            const response = await fetch('/background/mask', { method: 'POST', body: data });
+            if (!response.ok) throw new Error(await response.text());
+            masks.push({ file, mask: await response.blob(), history: [] });
+        }
+        edits = masks;
+        setStatus('');
+        await openEditor(0);
+    } catch (error) {
+        setStatus(error instanceof TypeError ? 'Não foi possível falar com o EuAmoPDF. Ele ainda está aberto?' : error.message, 'error');
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function openEditor(index) {
+    current = index;
+    form.classList.add('editing');
+    dialog.classList.add('wide');
+    $('editor').hidden = false;
+    $('editor-nav').hidden = edits.length < 2;
+    $('editor-count').textContent = `Imagem ${current + 1} de ${edits.length}`;
+    $('prev').disabled = current === 0;
+    $('next').disabled = current === edits.length - 1;
+    $('editor-status').textContent = '';
+    bitmap = await createImageBitmap(edits[current].file, { imageOrientation: 'from-image' });
+    // Cabe na janela sem ampliar além do original; o canvas acompanha a densidade da tela
+    const fit = Math.min(1, $('editor').clientWidth / bitmap.width, Math.max(240, window.innerHeight * 0.55) / bitmap.height);
+    const width = Math.round(bitmap.width * fit);
+    const height = Math.round(bitmap.height * fit);
+    const dpr = window.devicePixelRatio || 1;
+    for (const canvas of [$('preview'), paint]) {
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+    }
+    $('stage').style.width = `${width}px`;
+    showBackground();
+    await drawPreview();
+}
+
+async function drawPreview() {
+    const edit = edits[current];
+    const canvas = $('preview');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const { width, height } = canvas;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(await createImageBitmap(edit.mask), 0, 0, width, height);
+    const mask = ctx.getImageData(0, 0, width, height).data;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    const pixels = ctx.getImageData(0, 0, width, height);
+    for (let i = 3; i < pixels.data.length; i += 4) {
+        pixels.data[i] *= 0.25 + 0.75 * mask[i - 3] / 255;  // o que foi removido fica ~25% visível
+    }
+    ctx.putImageData(pixels, 0, 0);
+    $('undo').disabled = !edit.history.length;
+}
+
+function showBackground() {
+    const color = { branco: '#ffffff', preto: '#000000', cor: $('background-color').value }[$('background').value];
+    $('stage').style.background = color || '';  // sem cor: o xadrez de transparência do CSS
+}
+
+function selectMode(mode) {
+    brushMode = mode;
+    document.querySelectorAll('.segmented .mode').forEach((button) => {
+        button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+    });
+}
+
+function pointOf(event) {
+    const box = paint.getBoundingClientRect();
+    return { x: (event.clientX - box.left) * paint.width / box.width, y: (event.clientY - box.top) * paint.height / box.height };
+}
+
+function strokeTo(point) {
+    const ctx = paint.getContext('2d');
+    ctx.strokeStyle = brushMode === 'restaurar' ? '#1ec85a' : '#e63232';
+    ctx.lineWidth = $('brush').value * (window.devicePixelRatio || 1);
+    ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(painting.x, painting.y);
+    ctx.lineTo(point.x, point.y);
+    ctx.stroke();
+    painting = point;
+}
+
+async function finishStroke() {
+    if (!painting) return;
+    painting = null;
+    const edit = edits[current];
+    const data = new FormData();
+    data.append('action', tool.action);
+    data.append('modo', brushMode);
+    data.append('file', edit.file);
+    data.append('mascara', edit.mask, 'mascara.png');
+    data.append('traco', await new Promise((resolve) => paint.toBlob(resolve, 'image/png')), 'traco.png');
+    $('stage').classList.add('working');
+    $('editor-status').textContent = brushMode === 'restaurar' ? 'Restaurando a área marcada…' : 'Apagando a área marcada…';
+    try {
+        const response = await fetch('/background/refine', { method: 'POST', body: data });
+        if (!response.ok) throw new Error(await response.text());
+        edit.history.push(edit.mask);
+        edit.mask = await response.blob();
+        if (edits?.[current] === edit) await drawPreview();  // o usuário pode ter trocado de imagem
+        $('editor-status').textContent = '';
+    } catch (error) {
+        $('editor-status').textContent = error instanceof TypeError ? 'Não foi possível falar com o EuAmoPDF.' : error.message;
+    } finally {
+        paint.getContext('2d').clearRect(0, 0, paint.width, paint.height);
+        $('stage').classList.remove('working');
+    }
+}
+
+async function undo() {
+    const edit = edits?.[current];
+    if (!edit?.history.length || $('stage').classList.contains('working')) return;
+    edit.mask = edit.history.pop();
+    await drawPreview();
+}
+
+paint.addEventListener('pointerdown', (event) => {
+    if ($('stage').classList.contains('working')) return;
+    try { paint.setPointerCapture(event.pointerId); } catch { /* sem captura, o traço só para ao sair do canvas */ }
+    painting = pointOf(event);
+    strokeTo(painting);  // um clique sem arrastar também marca
+});
+paint.addEventListener('pointermove', (event) => { if (painting) strokeTo(pointOf(event)); });
+paint.addEventListener('pointerup', finishStroke);
+paint.addEventListener('pointercancel', () => {
+    painting = null;
+    paint.getContext('2d').clearRect(0, 0, paint.width, paint.height);
+});
+document.querySelectorAll('.segmented .mode').forEach((button) => button.addEventListener('click', () => selectMode(button.dataset.mode)));
+$('undo').addEventListener('click', undo);
+document.addEventListener('keydown', (event) => {
+    if (edits && dialog.open && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        undo();
+    }
+});
+$('prev').addEventListener('click', () => openEditor(current - 1));
+$('next').addEventListener('click', () => openEditor(current + 1));
+$('back').addEventListener('click', () => { resetEditor(); setBusy(false); });
+$('background').addEventListener('change', () => { if (edits) showBackground(); });
+$('background-color').addEventListener('input', () => { if (edits) showBackground(); });
+
 function fileName(response) {
     const header = response.headers.get('Content-Disposition') || '';
     const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i);
@@ -335,7 +519,7 @@ function download(blob, name) {
 function setBusy(busy) {
     submit.disabled = busy || !files.length;
     submit.classList.toggle('busy', busy);
-    submit.textContent = busy ? 'Processando…' : tool.title;
+    submit.textContent = busy ? 'Processando…' : edits ? 'Baixar' : tool.title;
 }
 
 function setStatus(message, kind) {
