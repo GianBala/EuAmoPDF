@@ -326,6 +326,32 @@ def unlock_pdf(files, form, tmp):
     return doc.tobytes(garbage=3, deflate=True, encryption=pymupdf.PDF_ENCRYPT_NONE), f"{base}_sem_senha.pdf"
 
 
+def check_text(text, what):
+    """As fontes padrão do PDF só têm os caracteres do Windows-1252 (acentos do português incluídos)."""
+    if not text:
+        raise UserError(f"Escreva o texto {what}.")
+    try:
+        text.encode('cp1252')
+    except UnicodeEncodeError:
+        raise UserError("Use só letras, números, acentos e pontuação comuns (sem emojis ou símbolos especiais).")
+
+
+def watermark_pdf(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    text = form.get('text', '').strip()
+    check_text(text, "da marca d'água")
+    for page in doc:
+        r = page.rect  # área visível, já considerando a rotação da página
+        size = min(100, 0.75 * abs(r.br - r.tl) / pymupdf.get_text_length(text, 'helv', 1))
+        center = pymupdf.Point(r.width / 2, r.height / 2) * page.derotation_matrix
+        start = pymupdf.Point(center.x - pymupdf.get_text_length(text, 'helv', size) / 2, center.y + size * 0.35)
+        # Diagonal subindo da esquerda para a direita, qualquer que seja a rotação da página
+        page.insert_text(start, text, fontsize=size, fontname='helv', color=(0.5, 0.5, 0.5),
+                         fill_opacity=0.3, morph=(center, pymupdf.Matrix(45 + page.rotation)))
+    return pdf_bytes(doc), f"{base}_marca_dagua.pdf"
+
+
 def format_size(size):
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
 
@@ -356,6 +382,7 @@ ACTIONS = {
     "compress-pdf": (compress_pdf, PDF, False),
     "protect-pdf": (protect_pdf, PDF, False),
     "unlock-pdf": (unlock_pdf, PDF, False),
+    "watermark-pdf": (watermark_pdf, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
     "rotate-pdf": (rotate_pdf, PDF, False),
     "word-to-pdf": (office_action("Word.Application"), WORD, False),
