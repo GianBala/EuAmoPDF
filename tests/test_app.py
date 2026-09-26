@@ -19,6 +19,12 @@ def client():
     return euamopdf.app.test_client()
 
 
+def noise(size, sigma, seed=0):
+    """Ruído gaussiano como o do Image.effect_noise, mas sempre o mesmo: teste reproduzível."""
+    values = np.random.default_rng(seed).normal(128, sigma, (size[1], size[0]))
+    return Image.fromarray(values.clip(0, 255).astype(np.uint8))
+
+
 def make_pdf(pages=3, **save_options):
     doc = pymupdf.open()
     for i in range(pages):
@@ -82,7 +88,7 @@ def test_split_rejects_invalid_pages(client, spec):
 def make_photo_pdf():
     """PDF com uma foto de alta resolução numa área pequena da página."""
     buf = io.BytesIO()
-    Image.effect_noise((1200, 1200), 60).convert("RGB").save(buf, "PNG")
+    noise((1200, 1200), 60).convert("RGB").save(buf, "PNG")
     doc = pymupdf.open()
     doc.new_page().insert_image(pymupdf.Rect(72, 72, 272, 272), stream=buf.getvalue())
     return doc.tobytes()
@@ -306,7 +312,7 @@ def make_photo(size=(1600, 1200), fmt="JPEG", quality=95, exif=None, mode="RGB")
     """Imagem com gradientes e ruído, que se comprime como uma foto de verdade."""
     w, h = size
     img = Image.merge("RGB", [Image.linear_gradient("L").resize(size), Image.radial_gradient("L").resize(size),
-                              Image.effect_noise(size, 30)])
+                              noise(size, 30)])
     if mode == "RGBA":
         img.putalpha(Image.linear_gradient("L").resize(size))  # topo transparente, base opaca
     buf = io.BytesIO()
@@ -603,8 +609,8 @@ def png_bytes(img):
 def scene():
     """Fundo azul com textura e dois retângulos amarelos; o 'modelo' só achou o da esquerda."""
     size = (400, 300)
-    noise = lambda low: Image.effect_noise(size, 12).point(lambda v: low + v // 4)
-    img = Image.merge("RGB", [noise(10), noise(80), noise(160)])
+    channel = lambda low, seed: noise(size, 12, seed).point(lambda v: low + v // 4)
+    img = Image.merge("RGB", [channel(10, 1), channel(80, 2), channel(160, 3)])
     draw = ImageDraw.Draw(img)
     draw.rectangle((40, 60, 160, 240), fill=(240, 200, 30))
     draw.rectangle((240, 60, 360, 240), fill=(235, 195, 40))
