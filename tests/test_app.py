@@ -366,7 +366,7 @@ def exif_with_location():
     exif = Image.Exif()
     exif[0x010F] = "Camera do celular"   # fabricante
     exif[0x0112] = 6                      # orientação: gravada deitada
-    exif.get_ifd(0x8825)[2] = (23.0, 32.0, 0.0)  # latitude
+    exif[0x8825] = {2: (23.0, 32.0, 0.0)}   # GPS: latitude (via get_ifd, o Pillow < 11.1 não grava)
     return exif
 
 
