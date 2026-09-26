@@ -110,8 +110,8 @@ def office_to_pdf(src, tmp, app_name):
     return libreoffice_to_pdf(src, out_dir)
 
 
-def open_pdf(source):
-    """Abre um PDF a partir do caminho ou dos bytes do arquivo."""
+def open_pdf(source, password=None):
+    """Abre um PDF a partir do caminho ou dos bytes do arquivo, com a senha se ele pedir uma."""
     try:
         if isinstance(source, bytes):
             doc = pymupdf.open(stream=source, filetype='pdf')
@@ -120,7 +120,10 @@ def open_pdf(source):
     except Exception:
         raise UserError("O arquivo não é um PDF válido ou está corrompido.")
     if doc.needs_pass:
-        raise UserError("Este PDF está protegido por senha.")
+        if password is None:
+            raise UserError("Este PDF está protegido por senha. Use \"Remover senha\" antes.")
+        if not doc.authenticate(password):
+            raise UserError("Senha incorreta.")
     return doc
 
 
@@ -301,6 +304,28 @@ def rotate_pdf(files, form, tmp):
     return pdf_bytes(doc), f"{base}_girado.pdf"
 
 
+def protect_pdf(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    password = form.get('password', '')
+    if not password:
+        raise UserError("Escolha uma senha.")
+    if password != form.get('password2'):
+        raise UserError("As senhas digitadas não são iguais.")
+    data = doc.tobytes(garbage=3, deflate=True, encryption=pymupdf.PDF_ENCRYPT_AES_256,
+                       user_pw=password, owner_pw=password)
+    return data, f"{base}_protegido.pdf"
+
+
+def unlock_pdf(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path, password=form.get('password', ''))
+    # Também remove restrições (impressão, cópia...) de PDFs que abrem sem senha
+    if not doc.metadata.get('encryption'):
+        raise UserError("Este PDF não tem senha nem restrições para remover.")
+    return doc.tobytes(garbage=3, deflate=True, encryption=pymupdf.PDF_ENCRYPT_NONE), f"{base}_sem_senha.pdf"
+
+
 def format_size(size):
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
 
@@ -329,6 +354,8 @@ IMAGES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff')
 ACTIONS = {
     "merge-pdf": (merge_pdf, PDF, True),
     "compress-pdf": (compress_pdf, PDF, False),
+    "protect-pdf": (protect_pdf, PDF, False),
+    "unlock-pdf": (unlock_pdf, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
     "rotate-pdf": (rotate_pdf, PDF, False),
     "word-to-pdf": (office_action("Word.Application"), WORD, False),

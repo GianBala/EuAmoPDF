@@ -120,6 +120,36 @@ def test_rotate_requires_valid_angle(client):
     assert post(client, "rotate-pdf", ("doc.pdf", make_pdf()), angle="45").status_code == 400
 
 
+def test_protect_then_unlock(client):
+    r = post(client, "protect-pdf", ("doc.pdf", make_pdf(2)), password="ação123", password2="ação123")
+    locked = pymupdf.open(stream=r.data, filetype="pdf")
+    assert locked.needs_pass
+    assert locked.authenticate("ação123")
+
+    assert post(client, "unlock-pdf", ("doc.pdf", r.data), password="errada").get_data(as_text=True) == "Senha incorreta."
+    r = post(client, "unlock-pdf", ("doc.pdf", r.data), password="ação123")
+    assert not pymupdf.open(stream=r.data, filetype="pdf").needs_pass
+    assert texts(r.data) == ["Pagina 1", "Pagina 2"]
+
+
+def test_protect_requires_matching_passwords(client):
+    assert post(client, "protect-pdf", ("doc.pdf", make_pdf()), password="", password2="").status_code == 400
+    assert post(client, "protect-pdf", ("doc.pdf", make_pdf()), password="a", password2="b").status_code == 400
+
+
+def test_unlock_removes_restrictions_without_password(client):
+    restricted = make_pdf(encryption=pymupdf.PDF_ENCRYPT_AES_256, owner_pw="dono",
+                          permissions=pymupdf.PDF_PERM_ACCESSIBILITY)
+    r = post(client, "unlock-pdf", ("doc.pdf", restricted))
+    assert r.status_code == 200
+    assert pymupdf.open(stream=r.data, filetype="pdf").metadata["encryption"] is None
+
+
+def test_unlock_plain_pdf_is_reported(client):
+    r = post(client, "unlock-pdf", ("doc.pdf", make_pdf()))
+    assert r.status_code == 400
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):
