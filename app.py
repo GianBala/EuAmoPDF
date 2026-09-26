@@ -10,11 +10,11 @@ import socket
 import subprocess
 import tempfile
 import webbrowser # Biblioteca para abrir o navegador
+import zipfile
 from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
 from urllib.parse import quote, urlparse
 
-import zipfile
 import pymupdf
 from PIL import Image, ImageOps
 
