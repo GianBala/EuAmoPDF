@@ -13,7 +13,8 @@ let dragged = null; // índice da miniatura sendo arrastada
 
 document.querySelectorAll('.tool').forEach((button) => button.addEventListener('click', () => openTool(button)));
 $('close').addEventListener('click', () => dialog.close());
-dialog.addEventListener('close', () => scheduleEstimate(false));
+// Sem forçar 'fechado': o evento chega depois do close() e o diálogo pode já ter sido reaberto
+dialog.addEventListener('close', () => scheduleEstimate());
 // Mudou alguma opção (e não o arquivo): recalcula a estimativa de tamanho
 form.addEventListener('change', (event) => { if (event.target !== input) scheduleEstimate(); });
 
