@@ -17,8 +17,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Instalar LibreOffice
+      - name: Instalar LibreOffice e Tesseract
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress tesseract-ocr tesseract-ocr-por
       - run: pip install -r requirements-dev.txt
       - run: pytest -v
