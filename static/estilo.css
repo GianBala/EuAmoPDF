@@ -224,6 +224,7 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .page-actions { display: flex; justify-content: center; }
 .page-actions .icon-button { padding: 2px 4px; }
 .field label { display: block; font-weight: 600; margin-bottom: 6px; }
+.field input[type=color] { height: 44px; margin-top: 8px; padding: 4px; cursor: pointer; }
 .field .check { display: flex; align-items: center; gap: 10px; font-weight: 400; cursor: pointer; }
 .field .check input { width: auto; margin: 0; accent-color: var(--accent); }
 

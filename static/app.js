@@ -15,6 +15,8 @@ document.querySelectorAll('.tool').forEach((button) => button.addEventListener('
 $('close').addEventListener('click', () => dialog.close());
 // Sem forçar 'fechado': o evento chega depois do close() e o diálogo pode já ter sido reaberto
 dialog.addEventListener('close', () => scheduleEstimate());
+// "Outra cor…" mostra o seletor de cor do fundo
+$('background').addEventListener('change', () => { $('background-color').hidden = $('background').value !== 'cor'; });
 // Mudou alguma opção (e não o arquivo): recalcula a estimativa de tamanho
 form.addEventListener('change', (event) => { if (event.target !== input) scheduleEstimate(); });
 
@@ -22,6 +24,7 @@ function openTool(button) {
     tool = button.dataset;
     files = [];
     form.reset();
+    $('background-color').hidden = true;  // o reset não dispara o change que o esconde
     $('dialog-title').textContent = tool.title;
     $('dialog-desc').textContent = button.querySelector('small').textContent;
     input.accept = tool.accept;
