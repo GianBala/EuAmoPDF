@@ -196,6 +196,53 @@ def test_number_pages_at_bottom_center_on_any_rotation(client, rotation):
     assert abs(bbox.x0 + bbox.x1 - page.rect.width) < 5
 
 
+def make_scanned_pdf(text, rotation=0):
+    """PDF só com a imagem do texto, como um escaneamento. Com rotação, a imagem é gravada
+    girada e a página a exibe em pé, como fazem muitos scanners."""
+    source = pymupdf.open()
+    source.new_page().insert_text((72, 100), text, fontsize=18)
+    pix = source[0].get_pixmap(dpi=150)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).rotate(rotation, expand=True)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    doc = pymupdf.open()
+    page = doc.new_page(width=img.width * 72 / 150, height=img.height * 72 / 150)
+    page.insert_image(page.rect, stream=buf.getvalue())
+    page.set_rotation(rotation)
+    return doc.tobytes()
+
+
+needs_tesseract = pytest.mark.skipif(
+    not (euamopdf.find_tessdata() and Path(euamopdf.find_tessdata(), "por.traineddata").exists()),
+    reason="Tesseract com português não instalado")
+
+
+@needs_tesseract
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_ocr_makes_scanned_text_searchable(client, rotation):
+    scanned = make_scanned_pdf("Contrato de locação número 42", rotation)
+    assert texts(scanned) == [""]
+    r = post(client, "ocr-pdf", ("scan.pdf", scanned))
+    assert r.status_code == 200
+    page = pymupdf.open(stream=r.data, filetype="pdf")[0]
+    assert " ".join(page.get_text().split()) == "Contrato de locação número 42"
+    assert page.search_for("locação")  # dá para buscar
+
+
+@needs_tesseract
+def test_ocr_skips_pages_that_already_have_text(client):
+    r = post(client, "ocr-pdf", ("doc.pdf", make_pdf()))
+    assert r.status_code == 400
+    assert "já têm texto" in r.get_data(as_text=True)
+
+
+def test_ocr_without_tesseract_explains_what_to_install(client, monkeypatch):
+    monkeypatch.setattr(euamopdf, "find_tessdata", lambda: None)
+    r = post(client, "ocr-pdf", ("scan.pdf", make_pdf()))
+    assert r.status_code == 400
+    assert "Tesseract" in r.get_data(as_text=True)
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):
