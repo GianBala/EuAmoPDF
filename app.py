@@ -262,6 +262,28 @@ def pdf_to_excel(files, form, tmp):
     return buf.getvalue(), f"{base}.xlsx"
 
 
+def pdf_to_ppt(files, form, tmp):
+    """Cada página vira um slide com a imagem da página (o texto não fica editável)."""
+    from pptx import Presentation
+    from pptx.util import Pt
+    path, base = files[0]
+    doc = open_pdf(path)
+    prs = Presentation()
+    first = doc[0].rect
+    scale = min(1, 4000 / max(first.width, first.height))  # o PowerPoint limita o slide a 56 polegadas
+    prs.slide_width, prs.slide_height = Pt(first.width * scale), Pt(first.height * scale)
+    for page in doc:
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # layout em branco
+        # Encaixa a página no slide sem distorcer, caso ela tenha outro formato
+        fit = min(prs.slide_width / page.rect.width, prs.slide_height / page.rect.height)
+        w, h = round(page.rect.width * fit), round(page.rect.height * fit)
+        image = io.BytesIO(page.get_pixmap(dpi=150).tobytes('jpg', jpg_quality=92))
+        slide.shapes.add_picture(image, (prs.slide_width - w) // 2, (prs.slide_height - h) // 2, w, h)
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue(), f"{base}.pptx"
+
+
 PDF = ('.pdf',)
 WORD = ('.doc', '.docx', '.odt', '.rtf')
 EXCEL = ('.xls', '.xlsx', '.ods', '.csv')
@@ -279,6 +301,7 @@ ACTIONS = {
     "pdf-to-word": (pdf_to_word, PDF, False),
     "pdf-to-jpg": (pdf_to_jpg, PDF, False),
     "pdf-to-excel": (pdf_to_excel, PDF, False),
+    "pdf-to-ppt": (pdf_to_ppt, PDF, False),
 }
 
 
