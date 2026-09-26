@@ -535,6 +535,20 @@ def test_rejects_bad_input_with_message(client, action, files, message):
     assert message in r.get_data(as_text=True)
 
 
+def test_unexpected_error_gives_generic_message(client, monkeypatch):
+    def broken(files, form, tmp):
+        raise RuntimeError("/caminho/interno/que/nao/deve/vazar")
+    monkeypatch.setitem(euamopdf.ACTIONS, "merge-pdf", (broken, (".pdf",), True))
+    r = post(client, "merge-pdf", ("a.pdf", make_pdf()))
+    assert r.status_code == 500
+    assert "Não foi possível processar" in r.get_data(as_text=True)
+    assert "caminho" not in r.get_data(as_text=True)
+
+
+def test_unknown_route_is_still_404(client):
+    assert client.get("/nao-existe").status_code == 404
+
+
 def test_rejects_upload_over_limit(client, monkeypatch):
     monkeypatch.setitem(euamopdf.app.config, "MAX_CONTENT_LENGTH", 100)
     assert post(client, "merge-pdf", ("a.pdf", make_pdf())).status_code == 413
