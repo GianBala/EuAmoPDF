@@ -620,17 +620,29 @@ def compress_image(path, settings):
     return data, IMAGE_EXTENSIONS[fmt], False
 
 
+def pack(results, zip_name):
+    """Um resultado vai direto; vários vão num ZIP. results: [(nome sem extensão, extensão, bytes)]."""
+    if len(results) == 1:
+        stem, ext, data = results[0]
+        return data, f"{stem}{ext}"
+    buf, used = io.BytesIO(), set()
+    with zipfile.ZipFile(buf, 'w') as z:  # imagens já vêm comprimidas
+        for stem, ext, data in results:
+            name, n = f"{stem}{ext}", 2
+            while name in used:  # dois arquivos com o mesmo nome não podem se sobrescrever no ZIP
+                name, n = f"{stem}_{n}{ext}", n + 1
+            used.add(name)
+            z.writestr(name, data)
+    return buf.getvalue(), zip_name
+
+
 def compress_images(files, form, tmp):
     settings = image_settings(form)
-    results, used, kept = [], set(), 0
+    results, kept = [], 0
     before = after = 0
     for path, base in files:
         data, ext, unchanged = compress_image(path, settings)
-        name, n = f"{base}_comprimida{ext}", 2
-        while name in used:  # duas imagens com o mesmo nome não podem se sobrescrever no ZIP
-            name, n = f"{base}_comprimida_{n}{ext}", n + 1
-        used.add(name)
-        results.append((name, data))
+        results.append((f"{base}_comprimida", ext, data))
         kept += unchanged
         before += path.stat().st_size
         after += len(data)
@@ -644,13 +656,7 @@ def compress_images(files, form, tmp):
             message += " Uma já estava bem comprimida e ficou como estava."
         elif kept:
             message += f" {kept} já estavam bem comprimidas e ficaram como estavam."
-    if len(results) == 1:
-        return results[0][1], results[0][0], message
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w') as z:  # imagens já vêm comprimidas
-        for name, data in results:
-            z.writestr(name, data)
-    return buf.getvalue(), "Imagens_comprimidas.zip", message
+    return *pack(results, "Imagens_comprimidas.zip"), message
 
 
 # --- ESTIMATIVA DE TAMANHO ---
