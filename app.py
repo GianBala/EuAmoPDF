@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, send_file
 import base64
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -474,13 +475,66 @@ def format_size(size):
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
 
 
+PDF_LEVELS = {'recomendada': (150, 75), 'forte': (96, 55)}  # (DPI alvo, qualidade do JPEG)
+
+
+def pdf_images(doc):
+    """Imagens que a compressão pode mexer: {xref: (página, largura, altura, menor DPI em que aparecem)}."""
+    found = {}
+    for page in doc:
+        for item in page.get_images(full=True):
+            xref, smask, width, height, bpc = item[:5]
+            if smask or bpc == 1 or doc.xref_get_key(xref, 'Mask')[0] != 'null':
+                continue  # transparência e imagens de 1 bit (texto escaneado em preto e branco) ficam como estão
+            rect = page.get_image_bbox(item)  # bem mais rápido que get_image_rects, que decodifica a imagem
+            if rect.is_empty or rect.is_infinite:
+                continue
+            dpi = 72 * math.sqrt(width * height / (rect.width * rect.height))  # vale também para imagem girada
+            if xref not in found or dpi < found[xref][3]:
+                found[xref] = (page.number, width, height, dpi)
+    return found
+
+
+def shrink_pdf_image(doc, xref, width, height, dpi, target_dpi, quality):
+    """A imagem em JPEG, reduzida à resolução alvo; None se isso não a deixar menor."""
+    raw = doc.xref_stream_raw(xref)
+    is_jpeg = doc.xref_get_key(xref, 'Filter')[1] == '/DCTDecode'
+    if dpi <= target_dpi + 10 and not is_jpeg:
+        return None  # imagem sem perda (desenho, captura de tela) só vira JPEG se tiver resolução demais
+    scale = min(1, target_dpi / dpi)
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    try:
+        img = None
+        if is_jpeg and doc.xref_get_key(xref, 'Decode')[0] == 'null':
+            img = Image.open(io.BytesIO(raw))
+            if img.mode in ('RGB', 'L'):
+                img.draft(img.mode, size)  # decodifica o JPEG já reduzido: bem mais rápido
+            else:
+                img = None  # CMYK e afins: o MuPDF converte as cores melhor
+        if img is None:
+            pix = pymupdf.Pixmap(doc, xref)
+            if pix.n not in (1, 3):
+                pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+            img = pix.pil_image()
+        img = img.convert('L' if img.mode == 'L' else 'RGB')
+    except Exception:
+        return None  # formato de imagem que não dá para decodificar: fica como está
+    if img.size != size:
+        img = img.resize(size, Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, 'JPEG', quality=quality, optimize=True)
+    return buf.getvalue() if buf.tell() < len(raw) else None
+
+
 def compress_pdf(files, form, tmp):
     path, base = files[0]
     doc = open_pdf(path)
-    # Imagens acima da resolução alvo são reduzidas e recomprimidas em JPEG
-    dpi, quality = (96, 55) if form.get('level') == 'forte' else (150, 75)
-    doc.rewrite_images(dpi_threshold=dpi + 10, dpi_target=dpi, quality=quality)
-    data = doc.tobytes(garbage=4, deflate=True, clean=True, use_objstms=1)
+    target_dpi, quality = PDF_LEVELS.get(form.get('level'), PDF_LEVELS['recomendada'])
+    for xref, (page_number, width, height, dpi) in pdf_images(doc).items():
+        smaller = shrink_pdf_image(doc, xref, width, height, dpi, target_dpi, quality)
+        if smaller:
+            doc[page_number].replace_image(xref, stream=smaller)  # vale para todas as páginas que a usam
+    data = doc.tobytes(garbage=4, deflate=True, clean=True, use_objstms=1)  # garbage=4 junta as cópias
     before = path.stat().st_size
     if len(data) >= before:
         return path.read_bytes(), f"{base}.pdf", "Este PDF já está otimizado: não deu para reduzir mais."

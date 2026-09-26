@@ -94,6 +94,34 @@ def test_compress_reduces_images(client, level):
     assert "Reduzido de" in unquote(r.headers["X-Mensagem"])
 
 
+def make_scan_pdf(dpi):
+    """Página A4 escaneada: uma foto ocupando a página inteira na resolução dada."""
+    size = (round(595 / 72 * dpi), round(842 / 72 * dpi))
+    doc = pymupdf.open()
+    doc.new_page().insert_image(pymupdf.paper_rect("a4"), stream=make_photo(size, quality=90))
+    return doc.tobytes()
+
+
+@pytest.mark.parametrize("level, width", [("recomendada", 1240), ("forte", 794)])
+def test_compress_pdf_reaches_the_target_resolution(client, level, width):
+    # 200 DPI -> 150 ou 96 DPI: fatores que não são potência de 2, que o MuPDF não reduzia
+    r = post(client, "compress-pdf", ("scan.pdf", make_scan_pdf(200)), level=level)
+    [image] = pymupdf.open(stream=r.data, filetype="pdf")[0].get_image_info()
+    assert abs(image["width"] - width) <= 2
+    assert image["bbox"][2] == pytest.approx(595, abs=1)  # continua ocupando a página
+
+
+def test_compress_pdf_keeps_transparent_and_small_lossless_images(client):
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_image(pymupdf.Rect(0, 0, 200, 200), stream=make_photo((1000, 1000), fmt="PNG", mode="RGBA"))
+    page.insert_image(pymupdf.Rect(0, 300, 300, 600), stream=make_photo((300, 300), fmt="PNG"))  # 72 DPI
+    r = post(client, "compress-pdf", ("doc.pdf", doc.tobytes()))
+    page = pymupdf.open(stream=r.data, filetype="pdf")[0]
+    assert sorted(info["width"] for info in page.get_image_info()) == [300, 1000]
+    assert [item[1] > 0 for item in page.get_images(full=True)].count(True) == 1  # a transparência continua
+
+
 def test_compress_never_makes_file_bigger(client):
     original = make_pdf(1, garbage=4, deflate=True, clean=True, use_objstms=1)
     r = post(client, "compress-pdf", ("texto.pdf", original))
