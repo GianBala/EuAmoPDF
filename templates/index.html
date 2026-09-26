@@ -75,6 +75,10 @@
             {{ tool('compress-image', '📷', 'Comprimir imagem', 'Diminua fotos e imagens JPG, PNG e WebP.',
                     'image-level max-size image-format strip-metadata estimate',
                     'Imagens que já estão mais comprimidas do que o nível escolhido ficam como estão. Várias imagens saem num ZIP.') }}
+            {{ tool('remove-background', '🪄', 'Remover fundo', 'Deixe só o objeto principal, com fundo transparente ou de outra cor.',
+                    'background bg-format',
+                    ('' if bg_model_ready else 'Na primeira vez, o EuAmoPDF baixa o modelo de IA (' ~ bg_model_mb ~ ' MB), o que pode levar alguns minutos; depois tudo funciona sem internet. ')
+                    ~ 'A imagem mantém a resolução e as cores originais: só o fundo sai. Suas imagens não saem do computador.') }}
         </div>
     </section>
 
@@ -183,6 +187,23 @@
                 <input type="checkbox" name="strip_metadata" value="1" checked>
                 Remover os dados da foto (localização, câmera, data)
             </label>
+        </div>
+        <div class="field" data-field="background" hidden>
+            <label for="background">Fundo</label>
+            <select name="background" id="background">
+                <option value="transparente" selected>Transparente</option>
+                <option value="branco">Branco</option>
+                <option value="preto">Preto</option>
+                <option value="cor">Outra cor…</option>
+            </select>
+            <input type="color" name="background_color" id="background-color" value="#2f80ed" aria-label="Cor do fundo" hidden>
+        </div>
+        <div class="field" data-field="bg-format" hidden>
+            <label for="bg-format">Formato</label>
+            <select name="bg_format" id="bg-format">
+                <option value="png" selected>PNG: abre em qualquer programa</option>
+                <option value="webp">WebP: arquivo bem menor, mesma qualidade</option>
+            </select>
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>

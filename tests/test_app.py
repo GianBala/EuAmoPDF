@@ -1,12 +1,15 @@
+import hashlib
 import io
 import tempfile
+import types
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote
 
+import numpy as np
 import pymupdf
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 
 import app as euamopdf
 
@@ -490,6 +493,161 @@ def test_estimate_rejects_what_the_tool_would_reject(client, action, files, stat
 def test_spread_picks_items_across_the_list():
     assert euamopdf.spread(list(range(10)), 3) == [0, 3, 6]
     assert euamopdf.spread([1, 2], 3) == [1, 2]
+
+
+# --- Remover fundo ---
+
+class FakeModel:
+    """Faz as vezes do ISNet: a máscara é um disco no centro, qualquer que seja a imagem."""
+    def __init__(self, found=True):
+        yy, xx = np.mgrid[:1024, :1024]
+        self.mask = ((yy - 512) ** 2 + (xx - 512) ** 2 < 300 ** 2).astype(np.float32) * found
+
+    def get_inputs(self):
+        return [types.SimpleNamespace(name="entrada")]
+
+    def run(self, outputs, feeds):
+        x = feeds["entrada"]
+        assert x.shape == (1, 3, 1024, 1024) and x.dtype == np.float32 and -0.51 < x.min() and x.max() < 0.51
+        return [self.mask[None, None]]
+
+
+@pytest.fixture
+def fake_model(monkeypatch):
+    monkeypatch.setattr(euamopdf, "_bg_session", FakeModel())
+
+
+def remove_bg(client, *files, **form):
+    return post(client, "remove-background", *files, **form)
+
+
+def test_remove_background_keeps_original_pixels_and_size(client, fake_model):
+    photo = make_photo((1600, 1200), fmt="PNG")
+    r = remove_bg(client, ("foto.png", photo))
+    assert r.headers["Content-Disposition"].endswith("foto_sem_fundo.png")
+    out, src = opened(r.data), opened(photo).convert("RGB")
+    assert out.format == "PNG" and out.mode == "RGBA" and out.size == src.size
+    alpha = np.asarray(out)[..., 3]
+    assert alpha[600, 800] == 255 and alpha[0, 0] == 0
+    inside = alpha == 255  # no objeto, os pixels são exatamente os da fonte
+    assert np.array_equal(np.asarray(out)[..., :3][inside], np.asarray(src)[inside])
+
+
+def test_remove_background_erases_what_was_behind_transparent_pixels(client, fake_model):
+    r = remove_bg(client, ("foto.png", make_photo((400, 300), fmt="PNG")))
+    pixels = np.asarray(opened(r.data))
+    assert not pixels[pixels[..., 3] == 0].any()  # o fundo não fica escondido atrás da transparência
+
+
+def test_remove_background_follows_photo_orientation_and_keeps_color_profile(client, fake_model):
+    img = Image.open(io.BytesIO(make_photo((600, 400))))
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", exif=exif, icc_profile=b"perfil de cor de teste")
+    out = opened(remove_bg(client, ("foto.jpg", buf.getvalue())).data)
+    assert out.size == (400, 600)
+    assert out.info.get("icc_profile") == b"perfil de cor de teste"
+
+
+@pytest.mark.parametrize("form, color", [
+    ({"background": "branco"}, (255, 255, 255)),
+    ({"background": "preto"}, (0, 0, 0)),
+    ({"background": "cor", "background_color": "#2F80ED"}, (47, 128, 237)),
+])
+def test_remove_background_paints_new_background(client, fake_model, form, color):
+    photo = make_photo((400, 300), fmt="PNG")
+    out = opened(remove_bg(client, ("foto.png", photo), **form).data)
+    assert out.mode == "RGB"
+    assert out.getpixel((0, 0)) == color
+    assert out.getpixel((200, 150)) == opened(photo).convert("RGB").getpixel((200, 150))
+
+
+def test_remove_background_webp_is_lossless(client, fake_model):
+    photo = make_photo((400, 300), fmt="PNG")
+    r = remove_bg(client, ("foto.png", photo), bg_format="webp")
+    out = opened(r.data)
+    assert out.format == "WEBP" and r.headers["Content-Disposition"].endswith(".webp")
+    assert out.convert("RGB").getpixel((200, 150)) == opened(photo).convert("RGB").getpixel((200, 150))
+
+
+def test_remove_background_keeps_existing_transparency(client, fake_model):
+    png = make_photo((400, 400), fmt="PNG", mode="RGBA")  # transparência em degradê: topo transparente
+    alpha = np.asarray(opened(remove_bg(client, ("logo.png", png)).data))[..., 3].astype(int)
+    source = np.asarray(opened(png))[..., 3].astype(int)
+    for y in (120, 200, 300):  # dentro do disco (raio ~117 px), vale a transparência original
+        assert abs(alpha[y, 200] - source[y, 200]) <= 1
+    assert alpha[200, 10] == 0  # fora do disco, transparente
+
+
+def test_remove_background_many_images_and_no_subject(client, monkeypatch):
+    monkeypatch.setattr(euamopdf, "_bg_session", FakeModel(found=False))
+    r = remove_bg(client, ("a.jpg", make_photo((300, 200))), ("a.jpg", make_photo((200, 300))))
+    assert sorted(unzip(r.data)) == ["a_sem_fundo.png", "a_sem_fundo_2.png"]
+    assert "Nenhum objeto em destaque" in unquote(r.headers["X-Mensagem"])
+
+
+def test_remove_background_rejects_invalid_color(client, fake_model):
+    r = remove_bg(client, ("a.jpg", make_photo((300, 200))), background="cor", background_color="vermelho")
+    assert r.status_code == 400
+
+
+@pytest.fixture
+def model_source(tmp_path, monkeypatch):
+    """Um 'modelo' servido de um arquivo local, com o SHA-256 dele."""
+    source = tmp_path / "modelo.onnx"
+    source.write_bytes(b"modelo de teste" * 1000)
+    monkeypatch.setattr(euamopdf, "BG_MODEL_URL", source.as_uri())
+    monkeypatch.setattr(euamopdf, "BG_MODEL_SHA256", hashlib.sha256(source.read_bytes()).hexdigest())
+    return source
+
+
+def test_model_download_puts_the_file_in_place(tmp_path, model_source):
+    target = tmp_path / "cache" / "modelo.onnx"
+    euamopdf.download_bg_model(target)
+    assert target.read_bytes() == model_source.read_bytes()
+    assert list(target.parent.iterdir()) == [target]  # nada de .part sobrando
+
+
+def test_model_download_rejects_a_corrupted_file(tmp_path, model_source, monkeypatch):
+    monkeypatch.setattr(euamopdf, "BG_MODEL_SHA256", "0" * 64)
+    target = tmp_path / "cache" / "modelo.onnx"
+    with pytest.raises(euamopdf.UserError, match="corrompido"):
+        euamopdf.download_bg_model(target)
+    assert list(target.parent.iterdir()) == []
+
+
+def test_model_download_without_internet(tmp_path, monkeypatch):
+    monkeypatch.setattr(euamopdf, "BG_MODEL_URL", (tmp_path / "nao-existe.onnx").as_uri())
+    with pytest.raises(euamopdf.UserError, match="internet"):
+        euamopdf.download_bg_model(tmp_path / "cache" / "modelo.onnx")
+
+
+def test_model_goes_to_the_system_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert euamopdf.bg_model_path() == tmp_path / "euamopdf" / "isnet-general-use.onnx"
+
+
+def test_first_use_warns_about_the_model_download(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(euamopdf, "bg_model_path", lambda: tmp_path / "nao-baixado.onnx")
+    assert "baixa o modelo de IA" in client.get("/").get_data(as_text=True)
+    monkeypatch.setattr(euamopdf, "bg_model_path", lambda: tmp_path)  # "já baixado"
+    assert "baixa o modelo de IA" not in client.get("/").get_data(as_text=True)
+
+
+@pytest.mark.skipif(not euamopdf.bg_model_path().exists(), reason="modelo de remover fundo não baixado")
+def test_remove_background_with_the_real_model(client, monkeypatch):
+    monkeypatch.setattr(euamopdf, "_bg_session", None)
+    scene = Image.open(io.BytesIO(make_photo((1200, 800)))).filter(ImageFilter.GaussianBlur(25))
+    subject = Image.new("L", scene.size, 0)
+    ImageDraw.Draw(subject).ellipse((400, 200, 800, 600), fill=255)
+    scene.paste(Image.new("RGB", scene.size, (230, 60, 40)), mask=subject)  # disco vermelho em destaque
+    buf = io.BytesIO()
+    scene.save(buf, "PNG")
+    alpha = np.asarray(opened(remove_bg(client, ("cena.png", buf.getvalue())).data))[..., 3] > 127
+    truth = np.asarray(subject) > 127
+    assert (alpha & truth).sum() / (alpha | truth).sum() > 0.9
 
 
 # --- Converter de PDF ---

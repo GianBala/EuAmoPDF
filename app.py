@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 import base64
+import hashlib
 import io
 import json
 import math
@@ -12,7 +13,9 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+import urllib.request
 import webbrowser # Biblioteca para abrir o navegador
 import zipfile
 import zlib
@@ -20,8 +23,9 @@ from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
 from urllib.parse import quote, urlparse
 
+import numpy as np
 import pymupdf
-from PIL import Image, ImageOps
+from PIL import Image, ImageChops, ImageOps
 
 
 app = Flask(__name__)
@@ -659,6 +663,130 @@ def compress_images(files, form, tmp):
     return *pack(results, "Imagens_comprimidas.zip"), message
 
 
+# --- REMOVER FUNDO ---
+# Modelo de IA ISNet (projeto DIS, licença Apache-2.0), no formato ONNX publicado pelo rembg.
+# É baixado só na primeira vez e conferido pelo SHA-256; as imagens nunca saem do computador.
+# Dos modelos testados, foi o de melhor recorte que roda bem num computador comum: ~1 s por
+# foto e ~800 MB de memória (o BiRefNet passou de 8 GB).
+BG_MODEL_URL = 'https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx'
+BG_MODEL_SHA256 = '60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a'
+BG_MODEL_MB = 170
+BG_MODEL_SIDE = 1024  # o modelo vê a imagem em 1024x1024; a máscara volta ao tamanho original
+_bg_session = None
+_bg_lock = threading.Lock()
+
+
+def bg_model_path():
+    """Na pasta de cache do sistema: %LOCALAPPDATA% no Windows, ~/.cache no Linux."""
+    base = os.environ.get('LOCALAPPDATA') or os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
+    return Path(base) / 'euamopdf' / 'isnet-general-use.onnx'
+
+
+def download_bg_model(path):
+    """Baixa o modelo para um arquivo temporário e só o põe no lugar se o SHA-256 conferir."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + '.part')
+    digest = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(BG_MODEL_URL, timeout=30) as response, open(partial, 'wb') as out:
+            while chunk := response.read(1 << 20):
+                digest.update(chunk)
+                out.write(chunk)
+    except OSError:
+        partial.unlink(missing_ok=True)
+        raise UserError("Não foi possível baixar o modelo de IA que remove o fundo. "
+                        "Só na primeira vez é preciso estar conectado à internet.")
+    if digest.hexdigest() != BG_MODEL_SHA256:
+        partial.unlink(missing_ok=True)
+        raise UserError("O modelo de IA baixado veio corrompido. Tente de novo.")
+    os.replace(partial, path)
+
+
+def bg_session():
+    """Sessão do modelo: baixado na primeira vez e carregado uma vez só."""
+    global _bg_session
+    with _bg_lock:  # também impede dois downloads ao mesmo tempo
+        if _bg_session is None:
+            import onnxruntime  # importação lenta: só quando usada
+            path = bg_model_path()
+            if not path.exists():
+                download_bg_model(path)
+            options = onnxruntime.SessionOptions()
+            options.enable_cpu_mem_arena = False  # pico de ~800 MB em vez de ~1,2 GB, por ~0,3 s a mais
+            _bg_session = onnxruntime.InferenceSession(str(path), options, providers=['CPUExecutionProvider'])
+        return _bg_session
+
+
+def subject_mask(img):
+    """Máscara do objeto principal (0 a 255), no tamanho da imagem."""
+    session = bg_session()
+    small = img.convert('RGB').resize((BG_MODEL_SIDE, BG_MODEL_SIDE), Image.Resampling.LANCZOS)
+    x = np.asarray(small, dtype=np.float32) / 255
+    x = (x - 0.5).transpose(2, 0, 1)[None]  # normalização do ISNet: média 0,5 e desvio 1, canais primeiro
+    out = session.run(None, {session.get_inputs()[0].name: x})[0][0, 0]
+    # A confiança do modelo fica em ~0,985 no objeto e raramente é 0 no fundo: esticar 0,05-0,95
+    # para 0-1 deixa o objeto opaco e o fundo limpo, mantendo a borda suave
+    out = (out - 0.05) / 0.9
+    mask = Image.fromarray((np.clip(out, 0, 1) * 255).round().astype(np.uint8))
+    # Ampliação bicúbica: nos testes, refinar a borda com guided filter piorou o recorte
+    return mask.resize(img.size, Image.Resampling.BICUBIC)
+
+
+BACKGROUNDS = {'branco': '#ffffff', 'preto': '#000000'}
+BG_FORMATS = {'png': ('PNG', '.png', {}), 'webp': ('WEBP', '.webp', {'lossless': True})}  # sempre sem perda
+
+
+def background_color(form):
+    """Cor do novo fundo, ou None para transparente."""
+    choice = form.get('background', 'transparente')
+    if choice != 'cor':
+        return BACKGROUNDS.get(choice)
+    color = form.get('background_color', '')
+    if not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
+        raise UserError("Escolha uma cor válida para o fundo.")
+    return color
+
+
+def remove_background(path, background, fmt):
+    """A imagem original sem o fundo, na mesma resolução e com os mesmos pixels no objeto:
+    (bytes, extensão, se foi encontrado um objeto em destaque)."""
+    img, _ = open_image(path)
+    # Perfil de cor CMYK ou de cinza não serve para a imagem RGBA gravada
+    icc = img.info.get('icc_profile') if img.mode in ('RGB', 'RGBA', 'P') else None
+    alpha = subject_mask(img)
+    if has_alpha(img):  # a transparência que a imagem já tinha continua valendo
+        alpha = ImageChops.multiply(alpha, img.convert('RGBA').getchannel('A'))
+    out = img.convert('RGBA')
+    out.putalpha(alpha)
+    if background:
+        canvas = Image.new('RGB', img.size, background)
+        canvas.paste(out, mask=alpha)
+        out = canvas
+    else:
+        # Pixel totalmente transparente guardaria a cor do fundo original, que qualquer um veria
+        # tirando a transparência. A borda semitransparente mantém a cor da fonte.
+        out = Image.composite(out, Image.new('RGBA', img.size), alpha.point(lambda v: 255 if v else 0))
+    pil_fmt, ext, options = BG_FORMATS[fmt]
+    buf = io.BytesIO()
+    out.save(buf, pil_fmt, **options, **({'icc_profile': icc} if icc else {}))
+    return buf.getvalue(), ext, alpha.getextrema()[1] >= 128
+
+
+def remove_backgrounds(files, form, tmp):
+    background = background_color(form)
+    fmt = form.get('bg_format') if form.get('bg_format') in BG_FORMATS else 'png'
+    results, missed = [], []
+    for path, base in files:
+        data, ext, found = remove_background(path, background, fmt)
+        results.append((f"{base}_sem_fundo", ext, data))
+        if not found:
+            missed.append(base)
+    message = f"Fundo removido de {len(files)} imagem(ns)."
+    if missed:
+        message = f"Nenhum objeto em destaque encontrado em: {', '.join(missed)}. Confira o resultado."
+    return *pack(results, "Imagens_sem_fundo.zip"), message
+
+
 # --- ESTIMATIVA DE TAMANHO ---
 # Rápida o bastante para rodar a cada mudança de opção: comprime de verdade só uma amostra
 # e extrapola. Devolve (tamanho atual, tamanho estimado) em bytes.
@@ -758,6 +886,7 @@ ACTIONS = {
     "merge-pdf": (merge_pdf, PDF, True),
     "compress-pdf": (compress_pdf, PDF, False),
     "compress-image": (compress_images, WEB_IMAGES, True),
+    "remove-background": (remove_backgrounds, WEB_IMAGES, True),
     "ocr-pdf": (ocr_pdf, PDF, False),
     "protect-pdf": (protect_pdf, PDF, False),
     "unlock-pdf": (unlock_pdf, PDF, False),
@@ -794,7 +923,7 @@ def index():
     # Extensões aceitas e se aceita vários arquivos, para os botões da interface
     tools = {action: {'accept': ','.join(accepted), 'multiple': multiple}
              for action, (_, accepted, multiple) in ACTIONS.items()}
-    return render_template('index.html', tools=tools)
+    return render_template('index.html', tools=tools, bg_model_ready=bg_model_path().exists(), bg_model_mb=BG_MODEL_MB)
 
 @app.route('/pages', methods=['POST'])
 def page_info():
