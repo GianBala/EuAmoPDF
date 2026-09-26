@@ -447,6 +447,21 @@ def test_pdf_estimate_is_close_to_the_real_result(client, level):
     assert body["depois"] == pytest.approx(real, rel=0.1)
 
 
+def test_pdf_estimate_with_uncompressed_image(client):
+    # Imagem gravada sem compressão: ao salvar, o PDF a comprime, e a estimativa precisa contar com isso
+    doc = pymupdf.open()
+    page = doc.new_page()
+    xref = page.insert_image(page.rect, stream=make_photo((1240, 1754), fmt="PNG"))
+    doc.update_stream(xref, pymupdf.Pixmap(doc, xref).samples, compress=False)
+    doc.xref_set_key(xref, "Filter", "null")
+    doc.xref_set_key(xref, "DecodeParms", "null")
+    pdf = doc.tobytes()
+    body = estimate(client, "compress-pdf", ("scan.pdf", pdf), level="forte").get_json()
+    real = len(post(client, "compress-pdf", ("scan.pdf", pdf), level="forte").data)
+    assert 0 < body["depois"] < body["antes"]
+    assert body["depois"] == pytest.approx(real, rel=0.2)
+
+
 def test_pdf_estimate_never_exceeds_the_original(client):
     pdf = make_pdf(1, garbage=4, deflate=True, clean=True, use_objstms=1)
     body = estimate(client, "compress-pdf", ("texto.pdf", pdf)).get_json()

@@ -15,6 +15,7 @@ import tempfile
 import time
 import webbrowser # Biblioteca para abrir o navegador
 import zipfile
+import zlib
 from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
 from urllib.parse import quote, urlparse
@@ -501,6 +502,12 @@ def pdf_images(doc):
     return found
 
 
+def stored_size(doc, xref, raw=None):
+    """Tamanho da imagem como fica no PDF gravado: stream sem compressão ganha deflate ao salvar."""
+    raw = doc.xref_stream_raw(xref) if raw is None else raw
+    return len(zlib.compress(raw)) if doc.xref_get_key(xref, 'Filter')[0] == 'null' else len(raw)
+
+
 def shrink_pdf_image(doc, xref, width, height, dpi, target_dpi, quality):
     """A imagem em JPEG, reduzida à resolução alvo; None se isso não a deixar menor."""
     raw = doc.xref_stream_raw(xref)
@@ -529,7 +536,7 @@ def shrink_pdf_image(doc, xref, width, height, dpi, target_dpi, quality):
         img = img.resize(size, Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, 'JPEG', quality=quality, optimize=True)
-    return buf.getvalue() if buf.tell() < len(raw) else None
+    return buf.getvalue() if buf.tell() < stored_size(doc, xref, raw) else None
 
 
 def compress_pdf(files, form, tmp):
@@ -708,7 +715,7 @@ def estimate_pdf(files, form):
     doc = open_pdf(path)
     target_dpi, quality = PDF_LEVELS.get(form.get('level'), PDF_LEVELS['recomendada'])
     images = pdf_images(doc)
-    raw = {xref: len(doc.xref_stream_raw(xref)) for xref in images}
+    raw = {xref: stored_size(doc, xref) for xref in images}
     sample = spread(list(images.items()), 8)
     sample_before = sum(raw[xref] for xref, _ in sample)
     sample_after = 0
