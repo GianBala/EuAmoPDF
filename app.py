@@ -747,13 +747,103 @@ def background_color(form):
     return color
 
 
-def remove_background(path, background, fmt):
+def load_mask(upload, size, what="máscara"):
+    """Máscara em tons de cinza enviada pela interface; tem de ter o tamanho da imagem."""
+    if upload is None:
+        raise UserError(f"Falta a {what}.")
+    try:
+        mask = Image.open(upload.stream)
+        mask.load()
+    except Exception:
+        raise UserError(f"A {what} enviada não é uma imagem válida.")
+    if mask.size != size:
+        raise UserError(f"A {what} não tem o tamanho da imagem.")
+    return mask.convert('L')
+
+
+def load_strokes(upload, size):
+    """Traço pintado na prévia (onde o canal alfa não é zero), levado ao tamanho da imagem."""
+    if upload is None:
+        raise UserError("Falta o traço.")
+    try:
+        strokes = Image.open(upload.stream).convert('RGBA').getchannel('A')
+    except Exception:
+        raise UserError("O traço enviado não é uma imagem válida.")
+    painted = np.asarray(strokes.resize(size, Image.Resampling.NEAREST)) > 0
+    if not painted.any():
+        raise UserError("Pinte por cima da área que quer corrigir.")
+    return painted
+
+
+REFINE_SIDE = 1024  # o GrabCut roda num recorte de até 1024 px em volta do traço
+
+
+def grabcut_region(img, mask, painted, restore, box, reach):
+    """Região a mudar dentro do recorte box: (região no tamanho do recorte, se encosta na borda)."""
+    import cv2  # importação lenta: só quando usada
+    h, w = mask.shape
+    x0, y0, x1, y1 = box
+    scale = min(1, REFINE_SIDE / max(x1 - x0, y1 - y0))
+    size = (max(1, round((x1 - x0) * scale)), max(1, round((y1 - y0) * scale)))
+    crop = np.asarray(img.convert('RGB').crop(box).resize(size, Image.Resampling.BILINEAR))[..., ::-1].copy()
+    cm = np.asarray(Image.fromarray(mask[y0:y1, x0:x1]).resize(size, Image.Resampling.BILINEAR))
+    cs = np.asarray(Image.fromarray(painted[y0:y1, x0:x1]).resize(size, Image.Resampling.NEAREST))
+    # Perto do traço, parte-se do que o usuário pediu, e o GrabCut devolve ao outro lado o que
+    # tiver a cor e as bordas do outro lado. Longe dele vale a máscara atual, travada onde o
+    # modelo teve certeza.
+    near = cv2.distanceTransform((~cs).astype(np.uint8), cv2.DIST_L2, 3) <= reach * scale
+    labels = np.where(cm > 127, cv2.GC_PR_FGD, cv2.GC_PR_BGD).astype(np.uint8)
+    labels[(cm >= 250) & ~near] = cv2.GC_FGD
+    labels[(cm <= 5) & ~near] = cv2.GC_BGD
+    labels[near] = cv2.GC_PR_FGD if restore else cv2.GC_PR_BGD
+    labels[cs] = cv2.GC_FGD if restore else cv2.GC_BGD
+    cv2.setRNGSeed(0)  # mesmo traço, mesmo resultado
+    try:
+        cv2.grabCut(crop, labels, None, np.zeros((1, 65)), np.zeros((1, 65)), 4, cv2.GC_INIT_WITH_MASK)
+        wanted = np.isin(labels, (cv2.GC_FGD, cv2.GC_PR_FGD) if restore else (cv2.GC_BGD, cv2.GC_PR_BGD))
+    except cv2.error:  # recorte só de objeto ou só de fundo: não há com o que comparar
+        wanted = cs
+    # Restaurar vale para o que não está totalmente opaco; apagar, para o que está minimamente
+    # visível. O que foi pintado sempre muda, e além dele só a região ligada ao traço.
+    to_change = (wanted & ((cm < 255) if restore else (cm > 0))) | cs
+    _, parts = cv2.connectedComponents(to_change.astype(np.uint8), connectivity=8)
+    touched = np.unique(parts[cs])
+    region = np.isin(parts, touched[touched > 0])
+    edge = (region[0].any() and y0 > 0) or (region[-1].any() and y1 < h) or \
+           (region[:, 0].any() and x0 > 0) or (region[:, -1].any() and x1 < w)
+    full = Image.fromarray(region.astype(np.uint8) * 255).resize((x1 - x0, y1 - y0), Image.Resampling.BILINEAR)
+    return np.asarray(full), edge
+
+
+def refine_mask(img, mask, painted, restore):
+    """Estende o traço do usuário à região que ele quis marcar (restaurar ou apagar) com o
+    GrabCut, e devolve a máscara corrigida. O resto da máscara não muda."""
+    m = np.asarray(mask, dtype=np.uint8)
+    h, w = m.shape
+    ys, xs = np.nonzero(painted)
+    reach = max(64, int(0.25 * max(h, w)), 2 * int(max(np.ptp(xs), np.ptp(ys))))  # vizinhança do traço
+    pad = 2 * reach
+    while True:  # se a região encosta na borda do recorte, ela continua além dele: amplia e refaz
+        box = (max(0, xs.min() - pad), max(0, ys.min() - pad), min(w, xs.max() + pad + 1), min(h, ys.max() + pad + 1))
+        region, edge = grabcut_region(img, m, painted, restore, box, reach)
+        if not edge or box == (0, 0, w, h):
+            break
+        pad *= 2
+    x0, y0, x1, y1 = box
+    out = m.copy()
+    part = out[y0:y1, x0:x1]
+    out[y0:y1, x0:x1] = np.maximum(part, region) if restore else np.minimum(part, 255 - region)
+    return Image.fromarray(out)
+
+
+def remove_background(path, background, fmt, mask_upload=None):
     """A imagem original sem o fundo, na mesma resolução e com os mesmos pixels no objeto:
-    (bytes, extensão, se foi encontrado um objeto em destaque)."""
+    (bytes, extensão, se foi encontrado um objeto em destaque). Com mask_upload, usa a máscara
+    corrigida na prévia em vez de rodar o modelo."""
     img, _ = open_image(path)
     # Perfil de cor CMYK ou de cinza não serve para a imagem RGBA gravada
     icc = img.info.get('icc_profile') if img.mode in ('RGB', 'RGBA', 'P') else None
-    alpha = subject_mask(img)
+    alpha = load_mask(mask_upload, img.size) if mask_upload else subject_mask(img)
     if has_alpha(img):  # a transparência que a imagem já tinha continua valendo
         alpha = ImageChops.multiply(alpha, img.convert('RGBA').getchannel('A'))
     out = img.convert('RGBA')
@@ -775,9 +865,12 @@ def remove_background(path, background, fmt):
 def remove_backgrounds(files, form, tmp):
     background = background_color(form)
     fmt = form.get('bg_format') if form.get('bg_format') in BG_FORMATS else 'png'
+    masks = request.files.getlist('mascara')  # corrigidas na prévia, uma por imagem, na mesma ordem
+    if masks and len(masks) != len(files):
+        raise UserError("Envie uma máscara para cada imagem.")
     results, missed = [], []
-    for path, base in files:
-        data, ext, found = remove_background(path, background, fmt)
+    for i, (path, base) in enumerate(files):
+        data, ext, found = remove_background(path, background, fmt, masks[i] if masks else None)
         results.append((f"{base}_sem_fundo", ext, data))
         if not found:
             missed.append(base)
@@ -989,6 +1082,36 @@ def handle_conversion():
     if message:  # cabeçalhos HTTP só aceitam ASCII
         response.headers['X-Mensagem'] = quote(message[0])
     return response
+
+def png_response(img):
+    buf = io.BytesIO()
+    img.save(buf, 'PNG')
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png')
+
+def single_image(saved):
+    if len(saved) != 1:
+        raise UserError("Envie uma imagem por vez.")
+    return open_image(saved[0][0])[0]
+
+@app.route('/background/mask', methods=['POST'])
+def background_mask():
+    """Máscara do objeto (PNG em tons de cinza, do tamanho da imagem), para a prévia editável."""
+    return png_response(process_uploads('remove-background', lambda saved, tmp: subject_mask(single_image(saved))))
+
+@app.route('/background/refine', methods=['POST'])
+def background_refine():
+    """Corrige a máscara a partir do traço pintado na prévia: restaura ou apaga a região marcada."""
+    mode = request.form.get('modo')
+    if mode not in ('restaurar', 'apagar'):
+        raise UserError("Escolha entre restaurar e apagar.")
+
+    def work(saved, tmp):
+        img = single_image(saved)
+        mask = load_mask(request.files.get('mascara'), img.size)
+        painted = load_strokes(request.files.get('traco'), img.size)
+        return refine_mask(img, mask, painted, mode == 'restaurar')
+    return png_response(process_uploads('remove-background', work))
 
 @app.route('/estimate', methods=['POST'])
 def estimate_size():

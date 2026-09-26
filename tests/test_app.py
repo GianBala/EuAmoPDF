@@ -592,6 +592,123 @@ def test_remove_background_rejects_invalid_color(client, fake_model):
     assert r.status_code == 400
 
 
+# --- Prévia e correção do remover fundo ---
+
+def png_bytes(img):
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def scene():
+    """Fundo azul com textura e dois retângulos amarelos; o 'modelo' só achou o da esquerda."""
+    size = (400, 300)
+    noise = lambda low: Image.effect_noise(size, 12).point(lambda v: low + v // 4)
+    img = Image.merge("RGB", [noise(10), noise(80), noise(160)])
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((40, 60, 160, 240), fill=(240, 200, 30))
+    draw.rectangle((240, 60, 360, 240), fill=(235, 195, 40))
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).rectangle((40, 60, 160, 240), fill=255)
+    return img, mask
+
+
+def dot(size, center, radius=8, scale=1):
+    """Traço como a prévia manda: RGBA colorido e semitransparente, no tamanho da tela."""
+    layer = Image.new("RGBA", (round(size[0] * scale), round(size[1] * scale)))
+    x, y, r = center[0] * scale, center[1] * scale, radius * scale
+    ImageDraw.Draw(layer).ellipse((x - r, y - r, x + r, y + r), fill=(40, 200, 80, 120))
+    return layer
+
+
+def refine(client, img, mask, strokes, mode):
+    return client.post("/background/refine", content_type="multipart/form-data", data={
+        "modo": mode, "file": (io.BytesIO(png_bytes(img)), "cena.png"),
+        "mascara": (io.BytesIO(png_bytes(mask)), "mascara.png"),
+        "traco": (io.BytesIO(png_bytes(strokes)), "traco.png")})
+
+
+def region(mask, box):
+    x0, y0, x1, y1 = box
+    return np.asarray(mask)[y0:y1 + 1, x0:x1 + 1]
+
+
+def test_background_mask_route_returns_the_model_mask(client, fake_model):
+    r = client.post("/background/mask", data={"action": "remove-background", "file": (io.BytesIO(make_photo((600, 400))), "f.jpg")},
+                    content_type="multipart/form-data")
+    mask = opened(r.data)
+    assert r.mimetype == "image/png" and mask.mode == "L" and mask.size == (600, 400)
+    assert mask.getpixel((300, 200)) == 255 and mask.getpixel((0, 0)) == 0
+
+
+def test_refine_restores_the_whole_part_that_was_missed(client):
+    img, mask = scene()
+    # traço pequeno, desenhado numa prévia com metade do tamanho da imagem
+    r = refine(client, img, mask, dot(img.size, (300, 150), scale=0.5), "restaurar")
+    new = opened(r.data)
+    assert (region(new, (242, 62, 358, 238)) > 127).mean() > 0.95  # o retângulo da direita voltou inteiro
+    assert (region(new, (40, 60, 160, 240)) == 255).all()          # o da esquerda continua
+    outside = np.asarray(new).copy()
+    outside[60:241, 40:161] = 0
+    outside[58:243, 238:363] = 0
+    assert (outside > 127).mean() < 0.02                             # o fundo não voltou
+
+
+def test_refine_erases_leftover_background_but_keeps_the_object(client):
+    img, mask = scene()
+    ImageDraw.Draw(mask).rectangle((170, 100, 225, 200), fill=255)  # pedaço de fundo que ficou
+    new = opened(refine(client, img, mask, dot(img.size, (198, 150)), "apagar").data)
+    assert (region(new, (172, 102, 223, 198)) < 128).mean() > 0.95
+    assert (region(new, (42, 62, 158, 238)) == 255).all()
+
+
+def test_refine_only_changes_the_region_touched_by_the_stroke(client):
+    img, _ = scene()
+    nothing = Image.new("L", img.size, 0)  # o 'modelo' não achou nenhum dos dois
+    new = opened(refine(client, img, nothing, dot(img.size, (100, 150)), "restaurar").data)
+    assert (region(new, (42, 62, 158, 238)) > 127).mean() > 0.95
+    assert (region(new, (242, 62, 358, 238)) == 0).all()  # o outro retângulo, que não foi tocado, não muda
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"modo": "pintar"}, "restaurar e apagar"),
+    ({"mascara": None}, "Falta a máscara"),
+    ({"mascara": Image.new("L", (10, 10))}, "tamanho da imagem"),
+    ({"traco": Image.new("RGBA", (400, 300))}, "Pinte por cima"),
+])
+def test_refine_rejects_bad_requests(client, change, message):
+    img, mask = scene()
+    data = {"modo": "restaurar", "file": (io.BytesIO(png_bytes(img)), "cena.png"),
+            "mascara": mask, "traco": dot(img.size, (300, 150))}
+    data.update(change)
+    for field in ("mascara", "traco"):
+        if data[field] is None:
+            del data[field]
+        elif isinstance(data[field], Image.Image):
+            data[field] = (io.BytesIO(png_bytes(data[field])), f"{field}.png")
+    r = client.post("/background/refine", data=data, content_type="multipart/form-data")
+    assert r.status_code == 400
+    assert message in r.get_data(as_text=True)
+
+
+def test_download_uses_the_mask_edited_in_the_preview(client, fake_model):
+    img, mask = scene()
+    r = client.post("/convert", content_type="multipart/form-data", data={
+        "action": "remove-background", "file": (io.BytesIO(png_bytes(img)), "cena.png"),
+        "mascara": (io.BytesIO(png_bytes(mask)), "mascara.png")})
+    alpha = np.asarray(opened(r.data))[..., 3]
+    assert np.array_equal(alpha, np.asarray(mask))  # e não o disco do modelo falso
+
+
+def test_download_needs_one_mask_per_image(client, fake_model):
+    img, mask = scene()
+    r = client.post("/convert", content_type="multipart/form-data", data={
+        "action": "remove-background",
+        "file": [(io.BytesIO(png_bytes(img)), "a.png"), (io.BytesIO(png_bytes(img)), "b.png")],
+        "mascara": (io.BytesIO(png_bytes(mask)), "mascara.png")})
+    assert r.status_code == 400
+
+
 @pytest.fixture
 def model_source(tmp_path, monkeypatch):
     """Um 'modelo' servido de um arquivo local, com o SHA-256 dele."""
