@@ -229,6 +229,13 @@ def test_ocr_makes_scanned_text_searchable(client, rotation):
     assert page.search_for("locação")  # dá para buscar
 
 
+def test_invisible_text_ignores_degenerate_ocr_boxes():
+    page = pymupdf.open().new_page()
+    euamopdf.add_invisible_text(page, [(10, 10, 10, 20, "vazia", 0, 0, 0), (10, 20, 50, 20, "achatada", 0, 1, 0),
+                                       (10, 30, 60, 45, "certa", 0, 2, 0)])
+    assert page.get_text().split() == ["certa"]
+
+
 @needs_tesseract
 def test_ocr_skips_pages_that_already_have_text(client):
     r = post(client, "ocr-pdf", ("doc.pdf", make_pdf()))

@@ -426,6 +426,8 @@ def add_invisible_text(page, words):
     for x0, y0, x1, y1, word, block, line, _ in words:
         bottom, height = lines[(block, line)]
         word = word.encode('cp1252', 'replace').decode('cp1252')  # a fonte padrão só tem esses caracteres
+        if x1 <= x0 or height <= 0 or not word.strip():
+            continue  # caixa degenerada do OCR: não há onde escrever
         start = pymupdf.Point(x0, bottom - 0.2 * height)
         stretch = (x1 - x0) / pymupdf.get_text_length(word, 'helv', height)  # ocupa a largura da palavra
         page.insert_text(start, word + ' ', fontsize=height, fontname='helv', render_mode=3,
