@@ -1,6 +1,14 @@
 from flask import Flask, render_template, request, send_file
-import os
+import io
+import re
 import sys
+import shutil
+import subprocess
+import tempfile
+import webbrowser # Biblioteca para abrir o navegador
+from pathlib import Path
+from threading import Timer # Para atrasar a abertura em 1 segundo
+from urllib.parse import urlparse
 
 if sys.platform == 'win32':
     import win32com.client
@@ -9,42 +17,31 @@ if sys.platform == 'win32':
 from PIL import Image
 from pdf2image import convert_from_path
 from pdf2docx import Converter
-from pptx import Presentation
-import pandas as pd
-import pdfplumber
-import subprocess
-import shutil
-import time
 import zipfile
-import webbrowser # Biblioteca para abrir o navegador
-from threading import Timer # Para atrasar a abertura em 1 segundo
 from PyPDF2 import PdfReader, PdfWriter, PdfMerger
 
 
 app = Flask(__name__)
 
 # --- CONFIGURAÇÕES ---
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'output'
-POPPLER_PATH = r'poppler-25.12.0\Library\bin'
+BASE_DIR = Path(__file__).resolve().parent
+POPPLER_PATH = BASE_DIR / 'poppler-25.12.0' / 'Library' / 'bin'
+LOCAL_HOSTS = {'127.0.0.1', 'localhost'}
 
-for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER]:
-    os.makedirs(folder, exist_ok=True)
 
-def cleanup_files():
-    """Remove arquivos com mais de 10 minutos"""
-    now = time.time()
-    for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER]:
-        for f in os.listdir(folder):
-            path = os.path.join(folder, f)
-            if os.stat(path).st_mtime < now - 600:
-                try: os.remove(path)
-                except: pass
+@app.before_request
+def only_local_requests():
+    """Recusa requisições de outros sites abertos no navegador (CSRF e DNS rebinding)."""
+    origin = request.headers.get('Origin')
+    if urlparse('//' + request.host).hostname not in LOCAL_HOSTS or \
+            (origin and urlparse(origin).hostname not in LOCAL_HOSTS):
+        return "Acesso permitido só a partir deste computador.", 403
+
 
 def office_to_pdf(input_path, output_path, app_name):
-    in_p = os.path.abspath(input_path)
-    out_p = os.path.abspath(output_path)
-    out_dir = os.path.dirname(out_p)
+    in_p = str(input_path)
+    out_p = str(output_path)
+    out_dir = str(output_path.parent)
 
     # No Windows, tenta primeiro via COM / win32com (Microsoft Office)
     if sys.platform == 'win32':
@@ -81,17 +78,106 @@ def office_to_pdf(input_path, output_path, app_name):
     if res.returncode != 0:
         raise RuntimeError(f"Erro ao converter com LibreOffice: {res.stderr}")
 
-    generated_pdf = os.path.join(out_dir, f"{os.path.splitext(os.path.basename(in_p))[0]}.pdf")
-    if os.path.exists(generated_pdf) and generated_pdf != out_p:
-        os.replace(generated_pdf, out_p)
+    generated_pdf = input_path.with_suffix('.pdf')
+    if generated_pdf.exists() and generated_pdf != output_path:
+        generated_pdf.replace(output_path)
 
-def open_browser():
-    """Abre o navegador no endereço local"""
-    webbrowser.open_new("http://127.0.0.1:5000/")
+
+# --- AÇÕES ---
+# Cada ação recebe a lista de (caminho salvo, nome original sem extensão),
+# o formulário e a pasta temporária da requisição, e devolve (bytes, nome do download).
+
+def merge_pdf(files, form, tmp):
+    merger = PdfMerger()
+    for path, _ in files:
+        merger.append(str(path))
+    buf = io.BytesIO()
+    merger.write(buf); merger.close()
+    return buf.getvalue(), "PDF_Unido.pdf"
+
+
+def split_pdf(files, form, tmp):
+    path, base = files[0]
+    reader = PdfReader(path)
+    start = form.get('page_start')
+    end = form.get('page_end')
+
+    if start and end:
+        writer = PdfWriter()
+        for i in range(int(start)-1, min(int(end), len(reader.pages))):
+            writer.add_page(reader.pages[i])
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue(), f"{base}_recorte.pdf"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for i, page in enumerate(reader.pages):
+            w = PdfWriter(); w.add_page(page)
+            page_buf = io.BytesIO()
+            w.write(page_buf)
+            z.writestr(f"pag_{i+1}.pdf", page_buf.getvalue())
+    return buf.getvalue(), f"{base}_dividido.zip"
+
+
+def office_action(app_name):
+    def convert(files, form, tmp):
+        path, base = files[0]
+        out = tmp / 'saida.pdf'
+        office_to_pdf(path, out, app_name)
+        return out.read_bytes(), f"{base}.pdf"
+    return convert
+
+
+def jpg_to_pdf(files, form, tmp):
+    path, base = files[0]
+    buf = io.BytesIO()
+    Image.open(path).convert('RGB').save(buf, 'PDF')
+    return buf.getvalue(), f"{base}.pdf"
+
+
+def pdf_to_word(files, form, tmp):
+    path, base = files[0]
+    out = tmp / 'saida.docx'
+    cv = Converter(str(path)); cv.convert(str(out)); cv.close()
+    return out.read_bytes(), f"{base}.docx"
+
+
+def pdf_to_jpg(files, form, tmp):
+    path, base = files[0]
+    p_path = POPPLER_PATH if (sys.platform == 'win32' and POPPLER_PATH.exists()) else None
+    imgs = convert_from_path(path, poppler_path=p_path)
+    buf = io.BytesIO()
+    imgs[0].save(buf, 'JPEG')
+    return buf.getvalue(), f"{base}.jpg"
+
+
+ACTIONS = {
+    "merge-pdf": merge_pdf,
+    "split-pdf": split_pdf,
+    "word-to-pdf": office_action("Word.Application"),
+    "excel-to-pdf": office_action("Excel.Application"),
+    "ppt-to-pdf": office_action("PowerPoint.Application"),
+    "jpg-to-pdf": jpg_to_pdf,
+    "pdf-to-word": pdf_to_word,
+    "pdf-to-jpg": pdf_to_jpg,
+}
+
+
+def save_uploads(uploads, tmp):
+    """Grava os envios com nomes gerados aqui; o nome original só vira nome do download."""
+    files = []
+    for i, f in enumerate(uploads):
+        original = Path(f.filename.replace('\\', '/').rsplit('/', 1)[-1])
+        suffix = original.suffix.lower() if re.fullmatch(r'\.[a-z0-9]{1,5}', original.suffix.lower()) else ''
+        path = tmp / f"entrada{i}{suffix}"
+        f.save(path)
+        files.append((path, original.stem or "arquivo"))
+    return files
+
 
 @app.route('/')
 def index():
-    cleanup_files()
     return render_template('index.html')
 
 @app.route('/convert', methods=['POST'])
@@ -99,68 +185,22 @@ def handle_conversion():
     action = request.form.get('action')
     files = request.files.getlist('file')
     if not files or files[0].filename == '': return "Nenhum arquivo", 400
+    if action not in ACTIONS: return "Ação desconhecida", 400
 
     try:
-        # --- JUNTAR PDF ---
-        if action == "merge-pdf":
-            merger = PdfMerger()
-            for f in files:
-                path = os.path.join(UPLOAD_FOLDER, f.filename)
-                f.save(path)
-                merger.append(path)
-            out_p = os.path.join(OUTPUT_FOLDER, "PDF_Unido.pdf")
-            merger.write(out_p); merger.close()
-            return send_file(os.path.abspath(out_p), as_attachment=True)
-
-        # --- DIVIDIR / INTERVALO ---
-        file = files[0]
-        in_p = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(in_p)
-        base = os.path.splitext(file.filename)[0]
-
-        if action == "split-pdf":
-            reader = PdfReader(in_p)
-            start = request.form.get('page_start')
-            end = request.form.get('page_end')
-            
-            if start and end:
-                writer = PdfWriter()
-                for i in range(int(start)-1, min(int(end), len(reader.pages))):
-                    writer.add_page(reader.pages[i])
-                out_p = os.path.join(OUTPUT_FOLDER, f"{base}_recorte.pdf")
-                with open(out_p, "wb") as f: writer.write(f)
-                return send_file(os.path.abspath(out_p), as_attachment=True)
-            else:
-                zip_p = os.path.join(OUTPUT_FOLDER, f"{base}_dividido.zip")
-                with zipfile.ZipFile(zip_p, 'w') as z:
-                    for i, page in enumerate(reader.pages):
-                        p_path = os.path.join(OUTPUT_FOLDER, f"pag_{i+1}.pdf")
-                        w = PdfWriter(); w.add_page(page)
-                        with open(p_path, "wb") as f: w.write(f)
-                        z.write(p_path, os.path.basename(p_path))
-                return send_file(os.path.abspath(zip_p), as_attachment=True)
-
-        # --- OUTRAS CONVERSÕES ---
-        out_p = os.path.join(OUTPUT_FOLDER, f"{base}.pdf") # Default
-        if action == "word-to-pdf": office_to_pdf(in_p, out_p, "Word.Application")
-        elif action == "excel-to-pdf": office_to_pdf(in_p, out_p, "Excel.Application")
-        elif action == "ppt-to-pdf": office_to_pdf(in_p, out_p, "PowerPoint.Application")
-        elif action == "jpg-to-pdf": Image.open(in_p).convert('RGB').save(out_p)
-        elif action == "pdf-to-word":
-            out_p = os.path.join(OUTPUT_FOLDER, f"{base}.docx")
-            cv = Converter(in_p); cv.convert(out_p); cv.close()
-        elif action == "pdf-to-jpg":
-            out_p = os.path.join(OUTPUT_FOLDER, f"{base}.jpg")
-            p_path = POPPLER_PATH if (os.name == 'nt' and os.path.exists(POPPLER_PATH)) else None
-            imgs = convert_from_path(in_p, poppler_path=p_path)
-            imgs[0].save(out_p, 'JPEG')
-        
-        return send_file(os.path.abspath(out_p), as_attachment=True)
-
+        # Tudo acontece numa pasta temporária própria, apagada ao fim da requisição
+        with tempfile.TemporaryDirectory(prefix='euamopdf-') as tmp:
+            tmp = Path(tmp)
+            data, download_name = ACTIONS[action](save_uploads(files, tmp), request.form, tmp)
     except Exception as e: return f"Erro: {str(e)}", 500
+
+    return send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
+
+def open_browser():
+    """Abre o navegador no endereço local"""
+    webbrowser.open_new("http://127.0.0.1:5000/")
 
 if __name__ == '__main__':
     # O Timer aguarda 1 segundo para garantir que o servidor Flask já subiu
-    # O parâmetro 'use_reloader=False' evita que o navegador abra duas vezes ao iniciar
     Timer(1, open_browser).start()
-    app.run(debug=True, use_reloader=False)
+    app.run(host='127.0.0.1', port=5000)
