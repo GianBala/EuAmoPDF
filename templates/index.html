@@ -29,6 +29,8 @@
             {{ tool('merge-pdf', '🔗', 'Juntar PDF', 'Una vários PDFs em um, na ordem que quiser.') }}
             {{ tool('split-pdf', '✂️', 'Dividir PDF', 'Separe as páginas ou extraia só as que precisar.', 'pages',
                     'Deixe as páginas em branco para gerar um PDF por página.') }}
+            {{ tool('organize-pdf', '🗂️', 'Organizar páginas', 'Reordene, gire e exclua páginas vendo as miniaturas.', 'organizer',
+                    'Arraste as miniaturas para mudar a ordem, ou use as setas.') }}
             {{ tool('rotate-pdf', '🔄', 'Girar PDF', 'Gire todas as páginas ou só algumas.', 'angle pages',
                     'Deixe as páginas em branco para girar todas.') }}
         </div>
@@ -103,6 +105,10 @@
         <ul id="file-list" class="file-list"></ul>
         <p id="page-info" class="muted" hidden></p>
 
+        <div class="field" data-field="organizer" hidden>
+            <input type="hidden" name="order" id="order">
+            <div id="organizer" class="organizer"></div>
+        </div>
         <div class="field" data-field="pages" hidden>
             <label for="pages">Páginas</label>
             <input type="text" name="pages" id="pages" placeholder="Ex.: 1-3, 5, 8" autocomplete="off">

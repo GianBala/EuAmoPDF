@@ -8,6 +8,8 @@ const submit = $('submit');
 let tool = null;   // data-* do botão da ferramenta aberta
 let files = [];    // arquivos escolhidos, na ordem em que serão enviados
 let pageInfoRequest = 0;
+let pages = [];     // Organizar: {pagina, giro, src} na nova ordem
+let dragged = null; // índice da miniatura sendo arrastada
 
 document.querySelectorAll('.tool').forEach((button) => button.addEventListener('click', () => openTool(button)));
 $('close').addEventListener('click', () => dialog.close());
@@ -122,13 +124,24 @@ function formatSize(bytes) {
     return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
 }
 
+function organizing() {
+    return tool.fields.split(' ').includes('organizer');
+}
+
 async function showPageInfo() {
     const info = $('page-info');
     const request = ++pageInfoRequest;  // ignora respostas de um arquivo que já foi trocado
     info.hidden = true;
+    pages = [];
+    renderPages();
     if (files.length !== 1 || !files[0].name.toLowerCase().endsWith('.pdf')) return;
     const data = new FormData();
     data.append('file', files[0]);
+    if (organizing()) {
+        data.append('miniaturas', '1');
+        info.textContent = 'Carregando as páginas…';
+        info.hidden = false;
+    }
     try {
         const response = await fetch('/pages', { method: 'POST', body: data });
         const body = await response.json();
@@ -137,9 +150,68 @@ async function showPageInfo() {
             ? `Este PDF tem ${body.paginas} página${body.paginas === 1 ? '' : 's'}.`
             : body.erro;
         info.hidden = false;
+        if (response.ok && body.miniaturas) {
+            pages = body.miniaturas.map((src, i) => ({ pagina: i + 1, giro: 0, src }));
+            renderPages();
+        }
     } catch {
         // Sem a contagem de páginas a ferramenta continua funcionando
     }
+}
+
+// --- Organizar páginas ---
+
+function renderPages() {
+    $('organizer').replaceChildren(...pages.map((page, i) => {
+        const card = document.createElement('figure');
+        card.className = 'page-card';
+        card.draggable = true;
+        const thumb = document.createElement('div');
+        thumb.className = 'page-thumb';
+        const img = document.createElement('img');
+        img.src = page.src;
+        img.alt = `Página ${page.pagina}`;
+        img.style.transform = `rotate(${page.giro}deg)`;
+        thumb.append(img);
+        const caption = document.createElement('figcaption');
+        caption.textContent = `Página ${page.pagina}`;
+        const actions = document.createElement('div');
+        actions.className = 'page-actions';
+        const name = `a página ${page.pagina}`;
+        actions.append(
+            iconButton('←', `Mover ${name} para trás`, i === 0, () => movePage(i, i - 1)),
+            iconButton('↺', `Girar ${name} para a esquerda`, false, () => turnPage(i, -90)),
+            iconButton('✕', `Excluir ${name}`, false, () => { pages.splice(i, 1); renderPages(); }),
+            iconButton('↻', `Girar ${name} para a direita`, false, () => turnPage(i, 90)),
+            iconButton('→', `Mover ${name} para a frente`, i === pages.length - 1, () => movePage(i, i + 1)),
+        );
+        card.addEventListener('dragstart', (event) => {
+            dragged = i;
+            event.dataTransfer.effectAllowed = 'move';
+            card.classList.add('dragging');
+        });
+        card.addEventListener('dragend', () => card.classList.remove('dragging'));
+        card.addEventListener('dragover', (event) => event.preventDefault());
+        card.addEventListener('drop', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (dragged !== null && dragged !== i) movePage(dragged, i);
+            dragged = null;
+        });
+        card.append(thumb, caption, actions);
+        return card;
+    }));
+}
+
+function movePage(from, to) {
+    const [page] = pages.splice(from, 1);
+    pages.splice(to, 0, page);
+    renderPages();
+}
+
+function turnPage(i, degrees) {
+    pages[i].giro = (pages[i].giro + degrees + 360) % 360;
+    renderPages();
 }
 
 // --- Envio ---
@@ -147,6 +219,13 @@ async function showPageInfo() {
 form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!files.length) return;
+    if (organizing()) {
+        if (!pages.length) {
+            setStatus('Espere as páginas carregarem, ou deixe ao menos uma página.', 'error');
+            return;
+        }
+        $('order').value = JSON.stringify(pages.map(({ pagina, giro }) => ({ pagina, giro })));
+    }
     const data = new FormData(form);
     data.append('action', tool.action);
     files.forEach((file) => data.append('file', file));
