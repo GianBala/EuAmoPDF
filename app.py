@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, send_file
 import io
+import os
 import re
 import sys
 import shutil
@@ -9,10 +10,6 @@ import webbrowser # Biblioteca para abrir o navegador
 from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
 from urllib.parse import urlparse
-
-if sys.platform == 'win32':
-    import win32com.client
-    import pythoncom
 
 import zipfile
 import pymupdf
@@ -24,6 +21,7 @@ app = Flask(__name__)
 # --- CONFIGURAÇÕES ---
 LOCAL_HOSTS = {'127.0.0.1', 'localhost'}
 MAX_UPLOAD_MB = 500
+LIBREOFFICE_TIMEOUT = 180  # segundos
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
 
 
@@ -40,49 +38,75 @@ def only_local_requests():
         return "Acesso permitido só a partir deste computador.", 403
 
 
-def office_to_pdf(input_path, output_path, app_name):
-    in_p = str(input_path)
-    out_p = str(output_path)
-    out_dir = str(output_path.parent)
+def find_soffice():
+    found = shutil.which('soffice') or shutil.which('libreoffice')
+    if found or sys.platform != 'win32':
+        return found
+    # No Windows o instalador do LibreOffice não põe o soffice no PATH
+    for base in (os.environ.get('PROGRAMFILES'), os.environ.get('PROGRAMFILES(X86)')):
+        if base and (exe := Path(base, 'LibreOffice', 'program', 'soffice.exe')).exists():
+            return str(exe)
+    return None
 
-    # No Windows, tenta primeiro via COM / win32com (Microsoft Office)
+
+def msoffice_to_pdf(src, out, app_name):
+    """Converte com o Microsoft Office numa instância própria, sem tocar no Office que o usuário tem aberto."""
+    import pythoncom
+    import win32com.client
+    pythoncom.CoInitialize()
+    office = None
+    try:
+        office = win32com.client.DispatchEx(app_name)
+        if app_name == "Word.Application":
+            office.DisplayAlerts = 0  # wdAlertsNone
+            doc = office.Documents.Open(str(src), ReadOnly=True)
+            try: doc.SaveAs(str(out), FileFormat=17)  # wdFormatPDF
+            finally: doc.Close(False)
+        elif app_name == "Excel.Application":
+            office.DisplayAlerts = False
+            wb = office.Workbooks.Open(str(src), ReadOnly=True)
+            try: wb.ExportAsFixedFormat(0, str(out))  # xlTypePDF
+            finally: wb.Close(False)
+        else:
+            pres = office.Presentations.Open(str(src), ReadOnly=True, WithWindow=False)
+            try: pres.SaveAs(str(out), 32)  # ppSaveAsPDF
+            finally: pres.Close()
+    finally:
+        if office is not None:
+            office.Quit()
+        pythoncom.CoUninitialize()
+
+
+def libreoffice_to_pdf(src, out_dir):
+    soffice = find_soffice()
+    if not soffice:
+        raise UserError("Para converter arquivos do Office é preciso ter o Microsoft Office (Windows) ou o LibreOffice instalado.")
+    # Perfil próprio por conversão: não conflita com outro LibreOffice aberto nem com conversões simultâneas
+    profile = (out_dir / 'perfil').as_uri()
+    try:
+        subprocess.run([soffice, '--headless', '--norestore', f'-env:UserInstallation={profile}',
+                        '--convert-to', 'pdf', '--outdir', str(out_dir), str(src)],
+                       capture_output=True, timeout=LIBREOFFICE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise UserError("O LibreOffice demorou demais para converter este arquivo.")
+    # O LibreOffice sai com código 0 mesmo quando falha: o que vale é o PDF existir
+    out = out_dir / f"{src.stem}.pdf"
+    if not out.exists():
+        raise UserError("O LibreOffice não conseguiu converter este arquivo. Veja se ele abre normalmente.")
+    return out
+
+
+def office_to_pdf(src, tmp, app_name):
     if sys.platform == 'win32':
+        out = tmp / 'saida.pdf'
         try:
-            pythoncom.CoInitialize()
-            try:
-                app_inst = win32com.client.Dispatch(app_name)
-                if "Word" in app_name:
-                    doc = app_inst.Documents.Open(in_p)
-                    doc.SaveAs(out_p, FileFormat=17)
-                    doc.Close()
-                elif "Excel" in app_name:
-                    app_inst.Visible = False
-                    wb = app_inst.Workbooks.Open(in_p)
-                    wb.ExportAsFixedFormat(0, out_p)
-                    wb.Close()
-                elif "PowerPoint" in app_name:
-                    pres = app_inst.Presentations.Open(in_p, WithWindow=False)
-                    pres.SaveAs(out_p, 32)
-                    pres.Close()
-                app_inst.Quit()
-                return
-            finally:
-                pythoncom.CoUninitialize()
+            msoffice_to_pdf(src, out, app_name)
+            return out
         except Exception:
-            pass # Fallback para LibreOffice se falhar no Windows
-
-    # No Linux (ou como fallback no Windows), usa LibreOffice
-    cmd = shutil.which('libreoffice') or shutil.which('soffice')
-    if not cmd:
-        raise RuntimeError("LibreOffice não encontrado no sistema para conversão de documentos Office.")
-
-    res = subprocess.run([cmd, '--headless', '-env:UserInstallation=file:///tmp/LibreOffice_Profile', '--convert-to', 'pdf', in_p, '--outdir', out_dir], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"Erro ao converter com LibreOffice: {res.stderr}")
-
-    generated_pdf = input_path.with_suffix('.pdf')
-    if generated_pdf.exists() and generated_pdf != output_path:
-        generated_pdf.replace(output_path)
+            app.logger.info("Microsoft Office indisponível; tentando o LibreOffice", exc_info=True)
+    out_dir = tmp / 'libreoffice'
+    out_dir.mkdir()
+    return libreoffice_to_pdf(src, out_dir)
 
 
 def open_pdf(path):
@@ -151,9 +175,7 @@ def split_pdf(files, form, tmp):
 def office_action(app_name):
     def convert(files, form, tmp):
         path, base = files[0]
-        out = tmp / 'saida.pdf'
-        office_to_pdf(path, out, app_name)
-        return out.read_bytes(), f"{base}.pdf"
+        return office_to_pdf(path, tmp, app_name).read_bytes(), f"{base}.pdf"
     return convert
 
 
