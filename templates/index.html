@@ -47,6 +47,14 @@
                         <label class="small text-muted" for="fPages">Páginas a extrair (vazio = uma por arquivo):</label>
                         <input type="text" name="pages" id="fPages" class="form-control" placeholder="Ex.: 1-3, 5, 8">
                     </div>
+                    <div id="divDpi" class="mb-3 d-none">
+                        <label class="small text-muted" for="fDpi">Qualidade das imagens:</label>
+                        <select name="dpi" id="fDpi" class="form-select">
+                            <option value="72">Baixa (72 DPI)</option>
+                            <option value="150" selected>Média (150 DPI)</option>
+                            <option value="300">Alta (300 DPI)</option>
+                        </select>
+                    </div>
                     <input type="file" name="file" id="fIn" class="form-control" required>
                 </div>
                 <div class="modal-footer border-0"><button type="submit" class="btn btn-primary w-100 py-2 fw-bold">EXECUTAR</button></div>
@@ -61,6 +69,7 @@
             document.getElementById('mAction').value = act;
             document.getElementById('mTitle').innerText = title;
             document.getElementById('divInterval').classList.toggle('d-none', act !== 'split-pdf');
+            document.getElementById('divDpi').classList.toggle('d-none', act !== 'pdf-to-jpg');
             const f = document.getElementById('fIn');
             multi ? f.setAttribute('multiple', '') : f.removeAttribute('multiple');
             modal.show();

@@ -180,7 +180,19 @@ def pdf_to_word(files, form, tmp):
 def pdf_to_jpg(files, form, tmp):
     path, base = files[0]
     doc = open_pdf(path)
-    return doc[0].get_pixmap(dpi=200).tobytes('jpg', jpg_quality=90), f"{base}.jpg"
+    dpi = {'72': 72, '300': 300}.get(form.get('dpi'), 150)
+
+    def jpg(page):
+        return page.get_pixmap(dpi=dpi).tobytes('jpg', jpg_quality=90)
+
+    if doc.page_count == 1:
+        return jpg(doc[0]), f"{base}.jpg"
+    digits = len(str(doc.page_count))  # pag_01, pag_02... para ordenar certo
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:  # JPEG já vem comprimido
+        for page in doc:
+            z.writestr(f"{base}_pag_{page.number + 1:0{digits}d}.jpg", jpg(page))
+    return buf.getvalue(), f"{base}_imagens.zip"
 
 
 PDF = ('.pdf',)
