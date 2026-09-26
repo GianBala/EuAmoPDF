@@ -10,7 +10,7 @@ import tempfile
 import webbrowser # Biblioteca para abrir o navegador
 from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import zipfile
 import pymupdf
@@ -150,7 +150,8 @@ def parse_pages(spec, count):
 
 # --- AÇÕES ---
 # Cada ação recebe a lista de (caminho salvo, nome original sem extensão),
-# o formulário e a pasta temporária da requisição, e devolve (bytes, nome do download).
+# o formulário e a pasta temporária da requisição, e devolve (bytes, nome do download)
+# e, opcionalmente, uma mensagem para a interface mostrar.
 
 def merge_pdf(files, form, tmp):
     out = pymupdf.open()
@@ -288,6 +289,24 @@ def pdf_to_ppt(files, form, tmp):
     return buf.getvalue(), f"{base}.pptx"
 
 
+def format_size(size):
+    return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
+
+
+def compress_pdf(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    # Imagens acima da resolução alvo são reduzidas e recomprimidas em JPEG
+    dpi, quality = (96, 55) if form.get('level') == 'forte' else (150, 75)
+    doc.rewrite_images(dpi_threshold=dpi + 10, dpi_target=dpi, quality=quality)
+    data = doc.tobytes(garbage=4, deflate=True, clean=True, use_objstms=1)
+    before = path.stat().st_size
+    if len(data) >= before:
+        return path.read_bytes(), f"{base}.pdf", "Este PDF já está otimizado: não deu para reduzir mais."
+    return data, f"{base}_comprimido.pdf", \
+        f"Reduzido de {format_size(before)} para {format_size(len(data))} ({1 - len(data) / before:.0%} menor)."
+
+
 PDF = ('.pdf',)
 WORD = ('.doc', '.docx', '.odt', '.rtf')
 EXCEL = ('.xls', '.xlsx', '.ods', '.csv')
@@ -297,6 +316,7 @@ IMAGES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff')
 # ação: (função, extensões aceitas, aceita vários arquivos)
 ACTIONS = {
     "merge-pdf": (merge_pdf, PDF, True),
+    "compress-pdf": (compress_pdf, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
     "word-to-pdf": (office_action("Word.Application"), WORD, False),
     "excel-to-pdf": (office_action("Excel.Application"), EXCEL, False),
@@ -367,14 +387,17 @@ def handle_conversion():
             saved = save_uploads(files, tmp)
             if any(path.stat().st_size == 0 for path, _ in saved):
                 raise UserError("O arquivo enviado está vazio.")
-            data, download_name = handler(saved, request.form, tmp)
+            data, download_name, *message = handler(saved, request.form, tmp)
     except UserError as e:
         return str(e), 400
     except Exception:
         app.logger.exception("Falha em %s", action)
         return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500
 
-    return send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
+    response = send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
+    if message:  # cabeçalhos HTTP só aceitam ASCII
+        response.headers['X-Mensagem'] = quote(message[0])
+    return response
 
 def free_port(preferred=5000):
     """Usa a porta preferida se estiver livre; senão, qualquer porta livre."""

@@ -33,6 +33,14 @@
     </section>
 
     <section>
+        <h2>Otimizar</h2>
+        <div class="grid">
+            {{ tool('compress-pdf', '🗜️', 'Comprimir PDF', 'Diminua o tamanho do arquivo.', 'level',
+                    'A compressão reduz a resolução das imagens do PDF. O texto não perde qualidade.') }}
+        </div>
+    </section>
+
+    <section>
         <h2>Converter para PDF</h2>
         <div class="grid">
             {{ tool('jpg-to-pdf', '🖼️', 'Imagens para PDF', 'JPG, PNG e outras, uma por página A4.') }}
@@ -82,6 +90,14 @@
                 <option value="72">Baixa (72 DPI), arquivos menores</option>
                 <option value="150" selected>Média (150 DPI)</option>
                 <option value="300">Alta (300 DPI), para impressão</option>
+            </select>
+        </div>
+
+        <div class="field" data-field="level" hidden>
+            <label for="level">Compressão</label>
+            <select name="level" id="level">
+                <option value="recomendada" selected>Recomendada: boa qualidade, arquivo menor</option>
+                <option value="forte">Forte: arquivo bem menor, imagens com menos qualidade</option>
             </select>
         </div>
 

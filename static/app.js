@@ -160,7 +160,8 @@ form.addEventListener('submit', async (event) => {
             return;
         }
         download(await response.blob(), fileName(response));
-        setStatus('Pronto! O arquivo foi baixado.', 'ok');
+        const message = response.headers.get('X-Mensagem');
+        setStatus(`Pronto! O arquivo foi baixado.${message ? ` ${decodeURIComponent(message)}` : ''}`, 'ok');
     } catch {
         setStatus('Não foi possível falar com o EuAmoPDF. Ele ainda está aberto?', 'error');
     } finally {

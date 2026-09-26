@@ -2,6 +2,7 @@ import io
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote
 
 import pymupdf
 import pytest
@@ -73,6 +74,31 @@ def test_split_page_list(client, spec, expected):
 def test_split_rejects_invalid_pages(client, spec):
     r = post(client, "split-pdf", ("doc.pdf", make_pdf(3)), pages=spec)
     assert r.status_code == 400
+
+
+def make_photo_pdf():
+    """PDF com uma foto de alta resolução numa área pequena da página."""
+    buf = io.BytesIO()
+    Image.effect_noise((1200, 1200), 60).convert("RGB").save(buf, "PNG")
+    doc = pymupdf.open()
+    doc.new_page().insert_image(pymupdf.Rect(72, 72, 272, 272), stream=buf.getvalue())
+    return doc.tobytes()
+
+
+@pytest.mark.parametrize("level", ["recomendada", "forte"])
+def test_compress_reduces_images(client, level):
+    original = make_photo_pdf()
+    r = post(client, "compress-pdf", ("foto.pdf", original), level=level)
+    assert r.status_code == 200
+    assert len(r.data) < len(original) / 2
+    assert "Reduzido de" in unquote(r.headers["X-Mensagem"])
+
+
+def test_compress_never_makes_file_bigger(client):
+    original = make_pdf(1, garbage=4, deflate=True, clean=True, use_objstms=1)
+    r = post(client, "compress-pdf", ("texto.pdf", original))
+    assert len(r.data) <= len(original)
+    assert "já está otimizado" in unquote(r.headers["X-Mensagem"])
 
 
 # --- Converter de PDF ---
