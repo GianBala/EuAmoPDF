@@ -127,10 +127,9 @@ def office_to_pdf(src, tmp, app_name):
 def open_pdf(source, password=None):
     """Abre um PDF a partir do caminho ou dos bytes do arquivo, com a senha se ele pedir uma."""
     try:
-        if isinstance(source, bytes):
-            doc = pymupdf.open(stream=source, filetype='pdf')
-        else:
-            doc = pymupdf.open(source, filetype='pdf')
+        # Abre da memória: no Windows, um arquivo que fica aberto impede apagar a pasta temporária
+        data = source if isinstance(source, bytes) else Path(source).read_bytes()
+        doc = pymupdf.open(stream=data, filetype='pdf')
     except Exception:
         raise UserError("O arquivo não é um PDF válido ou está corrompido.")
     if doc.needs_pass:
@@ -208,9 +207,10 @@ A4 = pymupdf.paper_rect('a4')
 def load_image(path):
     """Abre a imagem já na orientação da foto e com a transparência sobre fundo branco."""
     try:
-        img = Image.open(path)
-        fmt = img.format
-        img = ImageOps.exif_transpose(img)
+        with Image.open(path) as original:
+            fmt = original.format
+            img = ImageOps.exif_transpose(original)
+            img.load()
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
     if img.mode in ('RGBA', 'LA', 'PA') or 'transparency' in img.info:
@@ -243,7 +243,11 @@ def pdf_to_word(files, form, tmp):
     open_pdf(path)
     from pdf2docx import Converter  # importação lenta: só quando usada
     out = tmp / 'saida.docx'
-    cv = Converter(str(path)); cv.convert(str(out)); cv.close()
+    cv = Converter(str(path))
+    try:
+        cv.convert(str(out))
+    finally:
+        cv.close()
     return out.read_bytes(), f"{base}.docx"
 
 
