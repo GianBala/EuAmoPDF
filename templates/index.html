@@ -62,10 +62,10 @@
     <section>
         <h2>Otimizar</h2>
         <div class="grid">
-            {{ tool('compress-pdf', '🗜️', 'Comprimir PDF', 'Diminua o tamanho do arquivo.', 'level',
+            {{ tool('compress-pdf', '🗜️', 'Comprimir PDF', 'Diminua o tamanho do arquivo.', 'level estimate',
                     'A compressão reduz a resolução das imagens do PDF. O texto não perde qualidade.') }}
             {{ tool('compress-image', '📷', 'Comprimir imagem', 'Diminua fotos e imagens JPG, PNG e WebP.',
-                    'image-level max-size image-format strip-metadata',
+                    'image-level max-size image-format strip-metadata estimate',
                     'Imagens que já estão mais comprimidas do que o nível escolhido ficam como estão. Várias imagens saem num ZIP.') }}
             {{ tool('ocr-pdf', '🔍', 'OCR', 'Torne pesquisável o texto de um PDF escaneado.', '',
                     'A aparência não muda: o texto reconhecido fica invisível por cima da imagem, para buscar e copiar. Páginas que já têm texto ficam como estão.') }}
@@ -193,6 +193,10 @@
                 <option value="recomendada" selected>Recomendada: boa qualidade, arquivo menor</option>
                 <option value="forte">Forte: arquivo bem menor, imagens com menos qualidade</option>
             </select>
+        </div>
+
+        <div class="field" data-field="estimate" hidden>
+            <p id="estimate" class="estimate" aria-live="polite"></p>
         </div>
 
         <p id="hint" class="hint" hidden></p>
