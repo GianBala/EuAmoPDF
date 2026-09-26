@@ -150,6 +150,33 @@ def test_unlock_plain_pdf_is_reported(client):
     assert r.status_code == 400
 
 
+def visual_lines(page):
+    """Linhas de texto com direção e posição como o usuário vê a página (já girada)."""
+    m = page.rotation_matrix
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            direction = pymupdf.Point(line["dir"]) * m - pymupdf.Point(0, 0) * m
+            text = "".join(span["text"] for span in line["spans"])
+            yield text, (round(direction.x, 2), round(direction.y, 2)), pymupdf.Rect(line["bbox"]) * m
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_watermark_rises_diagonally_on_any_rotation(client, rotation):
+    doc = pymupdf.open()
+    doc.new_page().set_rotation(rotation)
+    r = post(client, "watermark-pdf", ("doc.pdf", doc.tobytes()), text="CONFIDENCIAL")
+    page = pymupdf.open(stream=r.data, filetype="pdf")[0]
+    [(text, direction, bbox)] = visual_lines(page)
+    assert text == "CONFIDENCIAL"
+    assert direction == (0.71, -0.71)  # sobe da esquerda para a direita
+    assert abs(bbox.x0 + bbox.x1 - page.rect.width) < 20  # centralizada
+
+
+@pytest.mark.parametrize("text", ["", "   ", "Aprovado ✅"])
+def test_watermark_rejects_invalid_text(client, text):
+    assert post(client, "watermark-pdf", ("doc.pdf", make_pdf()), text=text).status_code == 400
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):

@@ -43,6 +43,14 @@
     </section>
 
     <section>
+        <h2>Editar</h2>
+        <div class="grid">
+            {{ tool('watermark-pdf', '💧', "Marca d'água", 'Escreva um texto na diagonal de todas as páginas.', 'text',
+                    'O texto vai em cinza semitransparente, sem esconder o conteúdo da página.') }}
+        </div>
+    </section>
+
+    <section>
         <h2>Segurança</h2>
         <div class="grid">
             {{ tool('protect-pdf', '🔒', 'Proteger PDF', 'Exija uma senha para abrir o arquivo.', 'password password2',
@@ -111,6 +119,10 @@
         <div class="field" data-field="password2" hidden>
             <label for="password2">Repita a senha</label>
             <input type="password" name="password2" id="password2" autocomplete="off">
+        </div>
+        <div class="field" data-field="text" hidden>
+            <label for="text">Texto</label>
+            <input type="text" name="text" id="text" placeholder="Ex.: CONFIDENCIAL" maxlength="100">
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>
