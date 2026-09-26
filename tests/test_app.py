@@ -271,6 +271,114 @@ def test_page_thumbnails(client):
     assert all(t.startswith("data:image/jpeg;base64,") for t in thumbs)
 
 
+def make_photo(size=(1600, 1200), fmt="JPEG", quality=95, exif=None, mode="RGB"):
+    """Imagem com gradientes e ruído, que se comprime como uma foto de verdade."""
+    w, h = size
+    img = Image.merge("RGB", [Image.linear_gradient("L").resize(size), Image.radial_gradient("L").resize(size),
+                              Image.effect_noise(size, 30)])
+    if mode == "RGBA":
+        img.putalpha(Image.linear_gradient("L").resize(size))  # topo transparente, base opaca
+    buf = io.BytesIO()
+    options = {"quality": quality} if fmt in ("JPEG", "WEBP") else {}
+    img.save(buf, fmt, **options, **({"exif": exif} if exif else {}))
+    return buf.getvalue()
+
+
+def opened(data):
+    return Image.open(io.BytesIO(data))
+
+
+def compress_image(client, *files, **form):
+    return post(client, "compress-image", *files, **form)
+
+
+def test_compress_image_levels_get_progressively_smaller(client):
+    photo = make_photo()
+    sizes = [len(compress_image(client, ("foto.jpg", photo), image_level=level).data)
+             for level in ("leve", "recomendada", "forte", "extrema")]
+    assert sizes == sorted(sizes, reverse=True)
+    assert sizes[0] < len(photo)
+    r = compress_image(client, ("foto.jpg", photo), image_level="recomendada")
+    assert r.headers["Content-Disposition"].endswith("foto_comprimida.jpg")
+    assert opened(r.data).format == "JPEG"
+    assert "Reduzida de" in unquote(r.headers["X-Mensagem"])
+
+
+def test_compress_image_resizes_only_down(client):
+    r = compress_image(client, ("foto.jpg", make_photo((3000, 2000))), max_size="1280")
+    assert opened(r.data).size == (1280, 853)
+    r = compress_image(client, ("pequena.jpg", make_photo((600, 400))), max_size="1280")
+    assert opened(r.data).size == (600, 400)
+
+
+@pytest.mark.parametrize("target, fmt, ext", [("jpeg", "JPEG", ".jpg"), ("webp", "WEBP", ".webp"), ("png", "PNG", ".png")])
+def test_compress_image_converts_format(client, target, fmt, ext):
+    r = compress_image(client, ("foto.png", make_photo((600, 400), fmt="PNG")), image_format=target)
+    assert opened(r.data).format == fmt
+    assert r.headers["Content-Disposition"].endswith(f"foto_comprimida{ext}")
+
+
+def test_compress_image_png_to_jpg_puts_transparency_on_white(client):
+    png = make_photo((200, 200), fmt="PNG", mode="RGBA")
+    r = compress_image(client, ("logo.png", png), image_format="jpeg")
+    assert opened(r.data).getpixel((100, 0))[0] > 240  # topo transparente vira branco
+
+
+def test_compress_image_png_keeps_transparency_and_reduces_colors(client):
+    png = make_photo((400, 300), fmt="PNG", mode="RGBA")
+    r = compress_image(client, ("logo.png", png), image_level="forte")
+    img = opened(r.data)
+    assert img.format == "PNG" and img.mode == "P"
+    assert len(img.getcolors(256)) <= 128
+    assert "transparency" in img.info or img.convert("RGBA").getextrema()[3][0] < 255
+    assert len(r.data) < len(png)
+
+
+def exif_with_location():
+    exif = Image.Exif()
+    exif[0x010F] = "Camera do celular"   # fabricante
+    exif[0x0112] = 6                      # orientação: gravada deitada
+    exif.get_ifd(0x8825)[2] = (23.0, 32.0, 0.0)  # latitude
+    return exif
+
+
+def test_compress_image_removes_photo_data_by_default_in_the_ui(client):
+    photo = make_photo((400, 300), exif=exif_with_location())
+    r = compress_image(client, ("foto.jpg", photo), strip_metadata="1")
+    img = opened(r.data)
+    assert not img.getexif()
+    assert img.size == (300, 400)  # a orientação foi aplicada antes de tirar os dados
+
+
+def test_compress_image_can_keep_photo_data(client):
+    photo = make_photo((400, 300), exif=exif_with_location())
+    r = compress_image(client, ("foto.jpg", photo))
+    exif = opened(r.data).getexif()
+    assert exif[0x010F] == "Camera do celular"
+    assert 0x0112 not in exif  # orientação já aplicada: não pode ser girada de novo
+    assert exif.get_ifd(0x8825)
+
+
+def test_compress_image_keeps_already_compressed_original(client):
+    small = make_photo((400, 300), quality=30)
+    r = compress_image(client, ("leve.jpg", small), image_level="leve")
+    assert r.data == small
+    assert "já estava bem comprimida" in unquote(r.headers["X-Mensagem"])
+
+
+def test_compress_many_images_into_zip_without_name_clashes(client):
+    r = compress_image(client, ("foto.jpg", make_photo((400, 300))), ("foto.jpg", make_photo((300, 200))),
+                       ("tela.png", make_photo((300, 200), fmt="PNG")))
+    assert r.headers["Content-Disposition"].endswith("Imagens_comprimidas.zip")
+    assert sorted(unzip(r.data)) == ["foto_comprimida.jpg", "foto_comprimida_2.jpg", "tela_comprimida.png"]
+    assert unquote(r.headers["X-Mensagem"]).startswith("3 imagens: de")
+
+
+@pytest.mark.parametrize("name, content", [("anim.gif", make_image(fmt="GIF")), ("foto.jpg", b"nao e imagem")])
+def test_compress_image_rejects_other_files(client, name, content):
+    assert compress_image(client, (name, content)).status_code == 400
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):

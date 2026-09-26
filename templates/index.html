@@ -64,6 +64,9 @@
         <div class="grid">
             {{ tool('compress-pdf', '🗜️', 'Comprimir PDF', 'Diminua o tamanho do arquivo.', 'level',
                     'A compressão reduz a resolução das imagens do PDF. O texto não perde qualidade.') }}
+            {{ tool('compress-image', '📷', 'Comprimir imagem', 'Diminua fotos e imagens JPG, PNG e WebP.',
+                    'image-level max-size image-format strip-metadata',
+                    'Imagens que já estão mais comprimidas do que o nível escolhido ficam como estão. Várias imagens saem num ZIP.') }}
             {{ tool('ocr-pdf', '🔍', 'OCR', 'Torne pesquisável o texto de um PDF escaneado.', '',
                     'A aparência não muda: o texto reconhecido fica invisível por cima da imagem, para buscar e copiar. Páginas que já têm texto ficam como estão.') }}
         </div>
@@ -140,6 +143,40 @@
                 <option value="n-de-t">1 / 10</option>
                 <option value="pagina">Página 1 de 10</option>
             </select>
+        </div>
+        <div class="field" data-field="image-level" hidden>
+            <label for="image-level">Compressão</label>
+            <select name="image_level" id="image-level">
+                <option value="leve">Leve: quase sem diferença visível</option>
+                <option value="recomendada" selected>Recomendada: boa qualidade, arquivo bem menor</option>
+                <option value="forte">Forte: arquivo pequeno, alguma perda de qualidade</option>
+                <option value="extrema">Extrema: o menor arquivo, perda visível</option>
+            </select>
+        </div>
+        <div class="field" data-field="max-size" hidden>
+            <label for="max-size">Tamanho máximo</label>
+            <select name="max_size" id="max-size">
+                <option value="" selected>Manter as dimensões</option>
+                <option value="2560">Até 2560 px (2K)</option>
+                <option value="1920">Até 1920 px (Full HD)</option>
+                <option value="1280">Até 1280 px (redes sociais e e-mail)</option>
+                <option value="800">Até 800 px (miniaturas)</option>
+            </select>
+        </div>
+        <div class="field" data-field="image-format" hidden>
+            <label for="image-format">Formato</label>
+            <select name="image_format" id="image-format">
+                <option value="" selected>Manter o formato de cada imagem</option>
+                <option value="jpeg">JPG: fotos, funciona em qualquer lugar</option>
+                <option value="webp">WebP: o menor arquivo, bom para sites</option>
+                <option value="png">PNG: capturas de tela e imagens com transparência</option>
+            </select>
+        </div>
+        <div class="field" data-field="strip-metadata" hidden>
+            <label class="check">
+                <input type="checkbox" name="strip_metadata" value="1" checked>
+                Remover os dados da foto (localização, câmera, data)
+            </label>
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>

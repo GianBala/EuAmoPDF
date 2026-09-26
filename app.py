@@ -204,25 +204,41 @@ def office_action(app_name):
 A4 = pymupdf.paper_rect('a4')
 
 
-def load_image(path):
-    """Abre a imagem já na orientação da foto e com a transparência sobre fundo branco."""
+def has_alpha(img):
+    return img.mode in ('RGBA', 'LA', 'PA') or 'transparency' in img.info
+
+
+def on_white(img):
+    """Imagem em RGB, com a transparência sobre fundo branco."""
+    if not has_alpha(img):
+        return img.convert('RGB')
+    img = img.convert('RGBA')
+    bg = Image.new('RGB', img.size, 'white')
+    bg.paste(img, mask=img.getchannel('A'))
+    return bg
+
+
+def open_image(path):
+    """Abre a imagem já na orientação da foto. Devolve (imagem, formato original, dados do arquivo)."""
     try:
         with Image.open(path) as original:
-            fmt = original.format
+            fmt = 'JPEG' if original.format == 'MPO' else original.format  # MPO: JPEG de alguns celulares
             img = ImageOps.exif_transpose(original)
             img.load()
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
-    if img.mode in ('RGBA', 'LA', 'PA') or 'transparency' in img.info:
-        img = img.convert('RGBA')
-        bg = Image.new('RGB', img.size, 'white')
-        bg.paste(img, mask=img.getchannel('A'))
-        img = bg
+    return img, fmt
+
+
+def load_image(path):
+    """Imagem pronta para o PDF: na orientação da foto e com a transparência sobre fundo branco."""
+    img, fmt = open_image(path)
+    img = on_white(img)
     buf = io.BytesIO()
     if fmt == 'JPEG':  # foto continua JPEG; o resto vira PNG para não borrar texto
-        img.convert('RGB').save(buf, 'JPEG', quality=95)
+        img.save(buf, 'JPEG', quality=95)
     else:
-        img.convert('RGB').save(buf, 'PNG')
+        img.save(buf, 'PNG')
     return buf.getvalue(), img.size
 
 
@@ -472,16 +488,101 @@ def compress_pdf(files, form, tmp):
         f"Reduzido de {format_size(before)} para {format_size(len(data))} ({1 - len(data) / before:.0%} menor)."
 
 
+# nível: (qualidade do JPG e do WebP, cores do PNG; None = PNG sem perda)
+IMAGE_LEVELS = {
+    'leve': (85, None),
+    'recomendada': (72, 256),
+    'forte': (55, 128),
+    'extrema': (35, 64),
+}
+IMAGE_EXTENSIONS = {'JPEG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}
+MAX_SIDES = {'2560': 2560, '1920': 1920, '1280': 1280, '800': 800}
+
+
+def compress_image(path, level, max_side, target, strip_metadata):
+    """Devolve (bytes, extensão, se ficou como estava)."""
+    quality, colors = IMAGE_LEVELS[level]
+    img, fmt = open_image(path)
+    out_fmt = target if target in IMAGE_EXTENSIONS else fmt if fmt in IMAGE_EXTENSIONS else 'PNG'
+    resized = bool(max_side) and max(img.size) > max_side
+    if resized:
+        img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+
+    options = {}
+    if img.info.get('icc_profile'):
+        options['icc_profile'] = img.info['icc_profile']  # perfil de cor: sem ele as cores mudam
+    has_exif = bool(img.getexif())
+    if has_exif and not strip_metadata:
+        options['exif'] = img.getexif()  # a orientação já foi aplicada e retirada
+
+    buf = io.BytesIO()
+    if out_fmt == 'JPEG':
+        on_white(img).save(buf, 'JPEG', quality=quality, optimize=True, progressive=True, **options)
+    elif out_fmt == 'WEBP':
+        img.convert('RGBA' if has_alpha(img) else 'RGB').save(buf, 'WEBP', quality=quality, method=6, **options)
+    else:
+        img = img.convert('RGBA' if has_alpha(img) else 'RGB')
+        if colors:  # PNG com menos cores, como faz o TinyPNG
+            method = Image.Quantize.FASTOCTREE if img.mode == 'RGBA' else Image.Quantize.MEDIANCUT
+            img = img.quantize(colors, method=method, dither=Image.Dither.FLOYDSTEINBERG)
+        img.save(buf, 'PNG', optimize=True, **options)
+
+    data = buf.getvalue()
+    # Se não deu para diminuir e não havia nada a mudar (formato, tamanho, dados da foto), fica o original
+    if len(data) >= path.stat().st_size and out_fmt == fmt and not resized and not (has_exif and strip_metadata):
+        return path.read_bytes(), IMAGE_EXTENSIONS[fmt], True
+    return data, IMAGE_EXTENSIONS[out_fmt], False
+
+
+def compress_images(files, form, tmp):
+    level = form.get('image_level') if form.get('image_level') in IMAGE_LEVELS else 'recomendada'
+    max_side = MAX_SIDES.get(form.get('max_size'))
+    target = form.get('image_format', '').upper()
+    strip_metadata = bool(form.get('strip_metadata'))
+
+    results, used, kept = [], set(), 0
+    before = after = 0
+    for path, base in files:
+        data, ext, unchanged = compress_image(path, level, max_side, target, strip_metadata)
+        name, n = f"{base}_comprimida{ext}", 2
+        while name in used:  # duas imagens com o mesmo nome não podem se sobrescrever no ZIP
+            name, n = f"{base}_comprimida_{n}{ext}", n + 1
+        used.add(name)
+        results.append((name, data))
+        kept += unchanged
+        before += path.stat().st_size
+        after += len(data)
+
+    if len(files) == 1 and kept:
+        message = "A imagem já estava bem comprimida e ficou como estava."
+    else:
+        prefix = f"{len(files)} imagens: de" if len(files) > 1 else "Reduzida de"
+        message = f"{prefix} {format_size(before)} para {format_size(after)} ({max(0, 1 - after / before):.0%} menor)."
+        if kept == 1:
+            message += " Uma já estava bem comprimida e ficou como estava."
+        elif kept:
+            message += f" {kept} já estavam bem comprimidas e ficaram como estavam."
+    if len(results) == 1:
+        return results[0][1], results[0][0], message
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:  # imagens já vêm comprimidas
+        for name, data in results:
+            z.writestr(name, data)
+    return buf.getvalue(), "Imagens_comprimidas.zip", message
+
+
 PDF = ('.pdf',)
 WORD = ('.doc', '.docx', '.odt', '.rtf')
 EXCEL = ('.xls', '.xlsx', '.ods', '.csv')
 POWERPOINT = ('.ppt', '.pptx', '.odp')
 IMAGES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff')
+WEB_IMAGES = ('.jpg', '.jpeg', '.png', '.webp')
 
 # ação: (função, extensões aceitas, aceita vários arquivos)
 ACTIONS = {
     "merge-pdf": (merge_pdf, PDF, True),
     "compress-pdf": (compress_pdf, PDF, False),
+    "compress-image": (compress_images, WEB_IMAGES, True),
     "ocr-pdf": (ocr_pdf, PDF, False),
     "protect-pdf": (protect_pdf, PDF, False),
     "unlock-pdf": (unlock_pdf, PDF, False),
