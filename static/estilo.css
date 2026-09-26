@@ -166,6 +166,7 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 
 .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .drop-icon { font-size: 2rem; }
+.drop-tip { font-size: 0.8rem; }
 
 .file-list {
     list-style: none;

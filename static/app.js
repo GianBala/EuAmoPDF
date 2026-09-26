@@ -22,9 +22,6 @@ function openTool(button) {
     $('dialog-desc').textContent = button.querySelector('small').textContent;
     input.accept = tool.accept;
     input.multiple = 'multiple' in tool;
-    $('drop-text').textContent = input.multiple
-        ? 'Arraste os arquivos aqui ou clique para escolher'
-        : 'Arraste o arquivo aqui ou clique para escolher';
 
     // Mostra só os campos da ferramenta; campos escondidos ficam desativados e não são enviados
     const fields = tool.fields.split(' ');
@@ -100,7 +97,26 @@ function render() {
         return item;
     }));
     submit.disabled = files.length === 0;
+    updateDropText();
     showPageInfo();
+}
+
+function updateDropText() {
+    const text = $('drop-text');
+    if (!input.multiple) {
+        text.textContent = files.length
+            ? 'Arraste ou clique para trocar o arquivo'
+            : 'Arraste o arquivo aqui ou clique para escolher';
+        return;
+    }
+    // Cada escolha soma à lista; na janela de arquivos, clicar sem Ctrl troca a seleção
+    text.textContent = files.length
+        ? 'Arraste ou clique para adicionar mais arquivos'
+        : 'Arraste os arquivos aqui ou clique para escolher';
+    const tip = document.createElement('small');
+    tip.className = 'drop-tip';
+    tip.textContent = 'Para marcar vários de uma vez na janela de arquivos, segure Ctrl ao clicar em cada um.';
+    text.append(document.createElement('br'), tip);
 }
 
 function iconButton(text, label, disabled, onClick) {
