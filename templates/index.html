@@ -29,6 +29,8 @@
             {{ tool('merge-pdf', '🔗', 'Juntar PDF', 'Una vários PDFs em um, na ordem que quiser.') }}
             {{ tool('split-pdf', '✂️', 'Dividir PDF', 'Separe as páginas ou extraia só as que precisar.', 'pages',
                     'Deixe as páginas em branco para gerar um PDF por página.') }}
+            {{ tool('rotate-pdf', '🔄', 'Girar PDF', 'Gire todas as páginas ou só algumas.', 'angle pages',
+                    'Deixe as páginas em branco para girar todas.') }}
         </div>
     </section>
 
@@ -83,6 +85,14 @@
         <div class="field" data-field="pages" hidden>
             <label for="pages">Páginas</label>
             <input type="text" name="pages" id="pages" placeholder="Ex.: 1-3, 5, 8" autocomplete="off">
+        </div>
+        <div class="field" data-field="angle" hidden>
+            <label for="angle">Girar</label>
+            <select name="angle" id="angle">
+                <option value="90" selected>90° para a direita ↻</option>
+                <option value="270">90° para a esquerda ↺</option>
+                <option value="180">180° (de cabeça para baixo)</option>
+            </select>
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>

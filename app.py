@@ -289,6 +289,18 @@ def pdf_to_ppt(files, form, tmp):
     return buf.getvalue(), f"{base}.pptx"
 
 
+def rotate_pdf(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    angle = {'90': 90, '180': 180, '270': 270}.get(form.get('angle'))
+    if angle is None:
+        raise UserError("Escolha para que lado girar.")
+    spec = form.get('pages', '').strip()
+    for i in set(parse_pages(spec, doc.page_count)) if spec else range(doc.page_count):
+        doc[i].set_rotation((doc[i].rotation + angle) % 360)
+    return pdf_bytes(doc), f"{base}_girado.pdf"
+
+
 def format_size(size):
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB".replace('.', ',')
 
@@ -318,6 +330,7 @@ ACTIONS = {
     "merge-pdf": (merge_pdf, PDF, True),
     "compress-pdf": (compress_pdf, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
+    "rotate-pdf": (rotate_pdf, PDF, False),
     "word-to-pdf": (office_action("Word.Application"), WORD, False),
     "excel-to-pdf": (office_action("Excel.Application"), EXCEL, False),
     "ppt-to-pdf": (office_action("PowerPoint.Application"), POWERPOINT, False),

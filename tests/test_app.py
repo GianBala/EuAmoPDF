@@ -101,6 +101,25 @@ def test_compress_never_makes_file_bigger(client):
     assert "já está otimizado" in unquote(r.headers["X-Mensagem"])
 
 
+def rotations(pdf):
+    return [page.rotation for page in pymupdf.open(stream=pdf, filetype="pdf")]
+
+
+def test_rotate_all_pages(client):
+    r = post(client, "rotate-pdf", ("doc.pdf", make_pdf(3)), angle="90")
+    assert rotations(r.data) == [90, 90, 90]
+
+
+def test_rotate_selected_pages_adds_to_current_rotation(client):
+    once = post(client, "rotate-pdf", ("doc.pdf", make_pdf(3)), angle="270", pages="1, 3").data
+    twice = post(client, "rotate-pdf", ("doc.pdf", once), angle="180", pages="1").data
+    assert rotations(twice) == [90, 0, 270]
+
+
+def test_rotate_requires_valid_angle(client):
+    assert post(client, "rotate-pdf", ("doc.pdf", make_pdf()), angle="45").status_code == 400
+
+
 # --- Converter de PDF ---
 
 def test_pdf_to_jpg_converts_every_page(client):
