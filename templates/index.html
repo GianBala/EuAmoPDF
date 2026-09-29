@@ -125,7 +125,9 @@
                     <button type="button" class="mode" data-mode="apagar" aria-pressed="false">Apagar</button>
                 </div>
                 <label class="brush">Pincel <input type="range" id="brush" min="6" max="120" value="30"></label>
+                <label class="inline-check"><input type="checkbox" id="smart" checked> Detecção inteligente</label>
                 <button type="button" class="icon-button" id="undo" disabled>↶ Desfazer</button>
+                <button type="button" class="icon-button toggle" id="view-final" aria-pressed="false">Ver como vai ficar</button>
                 <span class="editor-nav" id="editor-nav" hidden>
                     <button type="button" class="icon-button" id="prev" aria-label="Imagem anterior">‹</button>
                     <span id="editor-count"></span>
@@ -137,7 +139,7 @@
                 <canvas id="preview"></canvas>
                 <canvas id="paint"></canvas>
             </div>
-            <p class="muted editor-help">Pinte por cima de uma parte apagada por engano (<strong>Restaurar</strong>) ou de um pedaço de fundo que ficou (<strong>Apagar</strong>). Não precisa ser preciso: o EuAmoPDF completa a área pelas cores e bordas. O que foi removido aparece esmaecido.</p>
+            <p class="muted editor-help">Pinte por cima de uma parte apagada por engano (<strong>Restaurar</strong>) ou de um pedaço de fundo que ficou (<strong>Apagar</strong>). Não precisa ser preciso: o EuAmoPDF completa a área pelas cores e bordas. Se ele errar num trecho difícil, desligue a <strong>Detecção inteligente</strong> para o pincel mudar só o que você pintar. O que foi removido aparece com um véu vermelho; use <strong>Ver como vai ficar</strong> para conferir o resultado.</p>
             <p id="editor-status" class="editor-status" aria-live="polite"></p>
         </div>
 
