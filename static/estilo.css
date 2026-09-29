@@ -187,6 +187,10 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .file-list .size { color: var(--muted); font-size: 0.85rem; margin-right: 6px; }
 
 .field { margin-top: 16px; }
+.meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.meta-grid label { margin-bottom: 0; }
+.meta-grid input { margin-top: 6px; font-weight: 400; }
+.meta-strip { margin-top: 14px; }
 
 dialog.wide { width: min(1100px, calc(100vw - 32px)); }
 form.editing #drop, form.editing #file-list, form.editing #page-info { display: none; }

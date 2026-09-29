@@ -51,6 +51,7 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 
 - **Marca d'água** em texto, na diagonal de todas as páginas
 - **Numerar páginas** no rodapé (`1`, `1 / 10` ou `Página 1 de 10`)
+- **Editar metadados**: título, autor, assunto, palavras-chave, aplicativo, produtor e datas, já preenchidos com os dados atuais, ou remover todos. O pacote XMP, que vários leitores de PDF mostram no lugar dos outros campos, é atualizado junto
 - **Proteger** com senha (AES-256) e **remover senha** ou restrições de impressão e cópia
 
 </td>

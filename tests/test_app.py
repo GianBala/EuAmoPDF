@@ -1,5 +1,6 @@
 import hashlib
 import io
+from datetime import datetime
 import tempfile
 import types
 import zipfile
@@ -820,6 +821,82 @@ def test_remove_background_with_the_real_model(client, monkeypatch):
     alpha = np.asarray(opened(remove_bg(client, ("cena.png", buf.getvalue())).data))[..., 3] > 127
     truth = np.asarray(subject) > 127
     assert (alpha & truth).sum() / (alpha | truth).sum() > 0.9
+
+
+# --- Metadados ---
+
+XMP_ANTIGO = """<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:pdf="http://ns.adobe.com/pdf/1.3/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+    pdf:Producer="Produtor antigo" xmp:CreatorTool="Writer" pdfaid:part="2" pdfaid:conformance="B">
+  <dc:title><rdf:Alt><rdf:li xml:lang="x-default">Título antigo</rdf:li></rdf:Alt></dc:title>
+  <dc:creator><rdf:Seq><rdf:li>Autor antigo</rdf:li></rdf:Seq></dc:creator>
+</rdf:Description></rdf:RDF></x:xmpmeta>
+<?xpacket end="w"?>"""
+
+
+def pdf_with_metadata(xmp=None):
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.set_metadata({"title": "Título antigo", "author": "Autor antigo", "producer": "Produtor antigo",
+                      "creator": "Writer", "creationDate": "D:20260102030405"})
+    if xmp:
+        doc.set_xml_metadata(xmp)
+    return doc.tobytes()
+
+
+def edit(client, pdf, **form):
+    return post(client, "edit-metadata", ("relatorio.pdf", pdf), **form)
+
+
+NOVOS = {"meta_title": "Relatório de ação", "meta_author": "João da Silva", "meta_subject": "Contas",
+         "meta_keywords": "finanças, 2026", "meta_creator": "", "meta_producer": "EuAmoPDF",
+         "meta_created": "2026-01-02T03:04:05", "meta_modified": "2026-09-29T14:30:00"}
+
+
+def test_metadata_route_shows_current_values(client):
+    r = client.post("/metadata", data={"file": (io.BytesIO(pdf_with_metadata()), "a.pdf")}, content_type="multipart/form-data")
+    values = r.get_json()
+    assert values["meta_title"] == "Título antigo" and values["meta_producer"] == "Produtor antigo"
+    assert values["meta_created"] == "2026-01-02T03:04:05" and values["meta_modified"] == ""
+
+
+def test_edit_metadata_updates_the_info_dictionary(client):
+    r = edit(client, pdf_with_metadata(), **NOVOS)
+    assert r.headers["Content-Disposition"].endswith("relatorio.pdf")
+    meta = pymupdf.open(stream=r.data, filetype="pdf").metadata
+    assert (meta["title"], meta["author"], meta["subject"], meta["keywords"], meta["producer"]) == \
+        ("Relatório de ação", "João da Silva", "Contas", "finanças, 2026", "EuAmoPDF")
+    assert meta["creator"] == ""  # campo esvaziado some
+    assert euamopdf.parse_pdf_date(meta["modDate"]) == datetime.fromisoformat("2026-09-29T14:30:00").astimezone()
+
+
+def test_edit_metadata_keeps_xmp_in_sync_and_the_rest_of_it(client):
+    r = edit(client, pdf_with_metadata(XMP_ANTIGO), **NOVOS)
+    xmp = pymupdf.open(stream=r.data, filetype="pdf").get_xml_metadata()
+    assert "Relatório de ação" in xmp and "João da Silva" in xmp and "EuAmoPDF" in xmp
+    assert "antigo" not in xmp and "Writer" not in xmp  # nada do valor velho, nem como atributo
+    assert xmp.count("Relatório de ação") == 1
+    assert 'pdfaid:part="2"' in xmp  # o que não foi editado continua
+    assert "2026-09-29T14:30:00" in xmp
+
+
+def test_edit_metadata_does_not_create_xmp(client):
+    r = edit(client, pdf_with_metadata(), **NOVOS)
+    assert pymupdf.open(stream=r.data, filetype="pdf").get_xml_metadata() == ""
+
+
+def test_remove_all_metadata(client):
+    r = edit(client, pdf_with_metadata(XMP_ANTIGO), meta_strip="1")
+    doc = pymupdf.open(stream=r.data, filetype="pdf")
+    assert not any(v for k, v in doc.metadata.items() if k != "format")
+    assert doc.get_xml_metadata() == ""
+    assert "removidos" in unquote(r.headers["X-Mensagem"])
+
+
+def test_edit_metadata_rejects_invalid_date(client):
+    assert edit(client, pdf_with_metadata(), meta_created="ontem").status_code == 400
 
 
 # --- Converter de PDF ---
