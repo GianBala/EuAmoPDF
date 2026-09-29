@@ -895,6 +895,98 @@ def test_remove_all_metadata(client):
     assert "removidos" in unquote(r.headers["X-Mensagem"])
 
 
+XMP_FOTO = ('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" '
+            'exif:GPSLatitude="23,33.0S" exif:GPSLongitude="46,38.0W"><dc:title><rdf:Alt>'
+            '<rdf:li xml:lang="x-default">Foto antiga</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>')
+
+
+def phone_photo(fmt="JPEG"):
+    """Foto como a de um celular: câmera, orientação, localização GPS e XMP."""
+    exif = Image.Exif()
+    exif[0x010F], exif[0x0110], exif[0x0112] = "Samsung", "Galaxy", 6
+    exif[0x8825] = {1: "S", 2: (23.0, 33.0, 0.0), 3: "W", 4: (46.0, 38.0, 0.0)}
+    img = opened(make_photo((300, 200)))
+    buf = io.BytesIO()
+    if fmt == "PNG":
+        from PIL import PngImagePlugin
+        info = PngImagePlugin.PngInfo()
+        info.add_itxt("XML:com.adobe.xmp", XMP_FOTO)
+        img.save(buf, "PNG", exif=exif, pnginfo=info)
+    elif fmt == "JPEG":  # segmento XMP montado à mão: o parâmetro xmp= do JPEG só existe no Pillow 11
+        img.save(buf, "JPEG", exif=exif, quality=90)
+        data, xmp = buf.getvalue(), b"http://ns.adobe.com/xap/1.0/\x00" + XMP_FOTO.encode()
+        return data[:2] + b"\xff\xe1" + (len(xmp) + 2).to_bytes(2, "big") + xmp + data[2:]
+    else:
+        img.save(buf, fmt, exif=exif, xmp=XMP_FOTO.encode(), quality=90)
+    return buf.getvalue()
+
+
+def image_metadata(client, data, name):
+    return client.post("/metadata", data={"file": (io.BytesIO(data), name)}, content_type="multipart/form-data").get_json()
+
+
+def same_pixels(a, b):
+    return np.array_equal(np.asarray(opened(a).convert("RGBA")), np.asarray(opened(b).convert("RGBA")))
+
+
+FOTO = {"img_title": "Pôr do sol", "img_description": "Na praia", "img_author": "João", "img_copyright": "© João 2026",
+        "img_keywords": "praia, férias", "img_software": "", "img_taken": "2026-01-15T18:20:00"}
+
+
+@pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
+def test_image_metadata_is_read_and_edited_without_touching_the_image(client, fmt, ext):
+    src = phone_photo(fmt)
+    before = image_metadata(client, src, f"f.{ext}")
+    assert before["tipo"] == "imagem" and before["camera"] == "Samsung Galaxy"
+    assert before["img_title"] == "Foto antiga" and before["localizacao"] == "-23.55000, -46.63333"
+    r = post(client, "edit-metadata", (f"foto.{ext}", src), **FOTO)
+    assert r.headers["Content-Disposition"].endswith(f"foto.{ext}")
+    assert same_pixels(src, r.data)
+    after = image_metadata(client, r.data, f"f.{ext}")
+    assert {k: after[k] for k in FOTO if FOTO[k]} == {k: v for k, v in FOTO.items() if v}
+    assert after["localizacao"] == "-23.55000, -46.63333"  # sem pedir, a localização fica
+    assert opened(r.data).getexif()[0x0112] == 6
+
+
+@pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
+def test_image_location_is_removed_from_exif_and_xmp(client, fmt, ext):
+    r = post(client, "edit-metadata", (f"foto.{ext}", phone_photo(fmt)), img_strip_gps="1", **FOTO)
+    img = opened(r.data)
+    assert not img.getexif().get_ifd(0x8825)
+    xmp = img.info.get("xmp") or img.info.get("XML:com.adobe.xmp") or b""
+    assert b"GPS" not in (xmp if isinstance(xmp, bytes) else xmp.encode())
+    assert image_metadata(client, r.data, f"f.{ext}")["localizacao"] == ""
+
+
+@pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
+def test_remove_all_image_metadata_keeps_orientation(client, fmt, ext):
+    src = phone_photo(fmt)
+    r = post(client, "edit-metadata", (f"foto.{ext}", src), meta_strip="1")
+    img = opened(r.data)
+    assert dict(img.getexif()) == {0x0112: 6}  # sem ela, a foto apareceria deitada
+    assert not (img.info.get("xmp") or img.info.get("XML:com.adobe.xmp"))
+    assert same_pixels(src, r.data)
+
+
+def test_jpeg_image_data_stays_byte_for_byte_identical(client):
+    src = phone_photo("JPEG")
+    out = post(client, "edit-metadata", ("foto.jpg", src), **FOTO).data
+    assert out[out.index(b"\xff\xda"):] == src[src.index(b"\xff\xda"):]  # nada recomprimido
+
+
+@pytest.mark.parametrize("lossless, mode", [(False, "RGB"), (True, "RGBA")])  # com perda e transparência já vem estendido
+def test_simple_webp_gets_the_extended_header_for_metadata(client, lossless, mode):
+    buf = io.BytesIO()
+    opened(make_photo((120, 80), fmt="PNG", mode=mode)).save(buf, "WEBP", lossless=lossless)
+    src = buf.getvalue()
+    assert src[12:16] in (b"VP8 ", b"VP8L")  # sem VP8X
+    out = post(client, "edit-metadata", ("icone.webp", src), img_author="João").data
+    assert out[12:16] == b"VP8X"
+    assert image_metadata(client, out, "i.webp")["img_author"] == "João"
+    assert same_pixels(src, out)
+
+
 def test_edit_metadata_rejects_invalid_date(client):
     assert edit(client, pdf_with_metadata(), meta_created="ontem").status_code == 400
 
