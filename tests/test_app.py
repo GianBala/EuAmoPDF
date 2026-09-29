@@ -958,6 +958,23 @@ def test_image_metadata_is_read_and_edited_without_touching_the_image(client, fm
 
 
 @pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
+def test_image_date_taken_goes_to_exif_and_leaves_no_empty_block(client, fmt, ext):
+    src = make_photo((200, 150), fmt=fmt)  # sem EXIF nem XMP: a data só pode ir para o bloco Exif novo
+    r = post(client, "edit-metadata", (f"f.{ext}", src), img_taken="2026-05-06T07:08:09")
+    assert opened(r.data).getexif().get_ifd(0x8769)[0x9003] == "2026:05:06 07:08:09"
+    r = post(client, "edit-metadata", (f"f.{ext}", r.data), img_taken="")
+    assert 0x8769 not in opened(r.data).getexif()
+
+
+@pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
+def test_image_metadata_saved_unchanged_adds_no_exif_block(client, fmt, ext):
+    src = phone_photo(fmt)  # EXIF com câmera e GPS, sem o bloco Exif (0x8769)
+    form = {k: v for k, v in image_metadata(client, src, f"f.{ext}").items() if k.startswith("img_")}
+    r = post(client, "edit-metadata", (f"f.{ext}", src), **form)
+    assert 0x8769 not in opened(r.data).getexif()
+
+
+@pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
 def test_image_location_is_removed_from_exif_and_xmp(client, fmt, ext):
     r = post(client, "edit-metadata", (f"foto.{ext}", phone_photo(fmt)), img_strip_gps="1", **FOTO)
     img = opened(r.data)

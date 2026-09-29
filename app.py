@@ -693,15 +693,24 @@ def new_image_metadata(exif, xmp, form):
         return kept, None, {}
     values = {field: form.get(field, '').strip() for field in IMAGE_FIELDS}
     taken_iso = ''
+    # get_ifd só no bloco Exif que já existe: sem ele, o Pillow 10 não grava o bloco que o
+    # get_ifd devolve (a data se perdia) e os mais novos o gravam mesmo vazio
     if values['img_taken']:
         try:
             taken = datetime.fromisoformat(values['img_taken'])
         except ValueError:
             raise UserError(f"Data inválida: \"{values['img_taken']}\".")
         taken_iso = taken.strftime('%Y-%m-%dT%H:%M:%S')
-        exif.get_ifd(EXIF_IFD)[DATE_TAKEN] = taken.strftime('%Y:%m:%d %H:%M:%S')
-    else:
-        exif.get_ifd(EXIF_IFD).pop(DATE_TAKEN, None)
+        date = taken.strftime('%Y:%m:%d %H:%M:%S')
+        if EXIF_IFD in exif:
+            exif.get_ifd(EXIF_IFD)[DATE_TAKEN] = date
+        else:
+            exif[EXIF_IFD] = {DATE_TAKEN: date}
+    elif EXIF_IFD in exif:
+        ifd = exif.get_ifd(EXIF_IFD)
+        ifd.pop(DATE_TAKEN, None)
+        if not ifd:
+            del exif[EXIF_IFD]
     for field, tag in IMAGE_EXIF_TEXT.items():
         if values[field]:
             exif[tag] = values[field].encode('utf-8')
