@@ -341,6 +341,7 @@ function resetEditor() {
     form.classList.remove('editing');
     dialog.classList.remove('wide');
     selectMode('restaurar');
+    $('view-final').setAttribute('aria-pressed', 'false');
 }
 
 async function startEditor() {
@@ -404,8 +405,19 @@ async function drawPreview() {
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(bitmap, 0, 0, width, height);
     const pixels = ctx.getImageData(0, 0, width, height);
-    for (let i = 3; i < pixels.data.length; i += 4) {
-        pixels.data[i] *= 0.25 + 0.75 * mask[i - 3] / 255;  // o que foi removido fica ~25% visível
+    const data = pixels.data;
+    const final = $('view-final').getAttribute('aria-pressed') === 'true';
+    for (let i = 0; i < data.length; i += 4) {
+        const removed = 1 - mask[i] / 255;
+        if (final) {  // como vai ficar: o que saiu some
+            data[i + 3] *= 1 - removed;
+            continue;
+        }
+        // O que saiu continua bem visível (80% opaco), com um véu vermelho que o separa do que fica
+        data[i] += (220 - data[i]) * removed * 0.4;
+        data[i + 1] += (40 - data[i + 1]) * removed * 0.4;
+        data[i + 2] += (40 - data[i + 2]) * removed * 0.4;
+        data[i + 3] *= 1 - removed * 0.2;
     }
     ctx.putImageData(pixels, 0, 0);
     $('undo').disabled = !edit.history.length;
@@ -447,11 +459,13 @@ async function finishStroke() {
     const data = new FormData();
     data.append('action', tool.action);
     data.append('modo', brushMode);
+    data.append('inteligente', $('smart').checked ? '1' : '0');
     data.append('file', edit.file);
     data.append('mascara', edit.mask, 'mascara.png');
     data.append('traco', await new Promise((resolve) => paint.toBlob(resolve, 'image/png')), 'traco.png');
     $('stage').classList.add('working');
-    $('editor-status').textContent = brushMode === 'restaurar' ? 'Restaurando a área marcada…' : 'Apagando a área marcada…';
+    $('editor-status').textContent = !$('smart').checked ? 'Aplicando o pincel…'
+        : brushMode === 'restaurar' ? 'Restaurando a área marcada…' : 'Apagando a área marcada…';
     try {
         const response = await fetch('/background/refine', { method: 'POST', body: data });
         if (!response.ok) throw new Error(await response.text());
@@ -488,6 +502,11 @@ paint.addEventListener('pointercancel', () => {
 });
 document.querySelectorAll('.segmented .mode').forEach((button) => button.addEventListener('click', () => selectMode(button.dataset.mode)));
 $('undo').addEventListener('click', undo);
+$('view-final').addEventListener('click', () => {
+    const button = $('view-final');
+    button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+    drawPreview();
+});
 document.addEventListener('keydown', (event) => {
     if (edits && dialog.open && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault();
