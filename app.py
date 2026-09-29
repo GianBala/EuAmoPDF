@@ -1015,7 +1015,7 @@ def encode_image(img, fmt, quality, colors, options=None, fast_png=False):
     if fmt == 'JPEG':
         on_white(img).save(buf, 'JPEG', quality=quality, optimize=True, progressive=True, **options)
     elif fmt == 'WEBP':
-        # method 6 é o mais compacto, mas com transparência fica 20 vezes mais lento para ganhar ~3%
+        # method 6 é o mais compacto, mas com transparência fica ~10 vezes mais lento para ganhar 4 a 5%
         img = img.convert('RGBA' if has_alpha(img) else 'RGB')
         img.save(buf, 'WEBP', quality=quality, method=5 if img.mode == 'RGBA' else 6, **options)
     else:
