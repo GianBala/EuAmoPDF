@@ -890,6 +890,20 @@ def test_edit_metadata_keeps_xmp_in_sync_and_the_rest_of_it(client):
     assert "2026-09-29T14:30:00" in xmp
 
 
+@pytest.mark.parametrize("raw", ["D:20260102030405", "D:20260102030400Z", "D:20260102030405+05'30'"])
+def test_pdf_date_saved_unchanged_stays_as_it_was(client, raw):
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.set_metadata({"creationDate": raw})
+    pdf = doc.tobytes()
+    form = {k: v for k, v in client.post("/metadata", data={"file": (io.BytesIO(pdf), "a.pdf")},
+                                         content_type="multipart/form-data").get_json().items() if k.startswith("meta_")}
+    form["meta_created"] = form["meta_created"].removesuffix(":00")  # o navegador omite os segundos zerados
+    r = edit(client, pdf, meta_title="Outro título", **{k: v for k, v in form.items() if k != "meta_title"})
+    meta = pymupdf.open(stream=r.data, filetype="pdf").metadata
+    assert meta["title"] == "Outro título" and meta["creationDate"] == raw  # sem ganhar nem trocar o fuso
+
+
 def test_edit_metadata_does_not_create_xmp(client):
     r = edit(client, pdf_with_metadata(), **NOVOS)
     assert pymupdf.open(stream=r.data, filetype="pdf").get_xml_metadata() == ""
