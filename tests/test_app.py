@@ -1270,6 +1270,33 @@ def test_leaves_no_files_behind(client, tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="usa o /proc do Linux para ver os arquivos abertos")
+def test_no_upload_stays_open_when_the_temp_folder_is_deleted(client, monkeypatch):
+    """No Windows, arquivo aberto não pode ser apagado: a limpeza da pasta temporária quebraria e
+    a mensagem de erro viraria um erro 500. No Linux a limpeza funciona mesmo assim, então o
+    teste confere, na hora dela, que nada lá dentro continua aberto."""
+    left_open = []
+
+    class CheckedFolder(tempfile.TemporaryDirectory):
+        def cleanup(self):
+            for fd in Path("/proc/self/fd").iterdir():
+                try:
+                    target = str(fd.readlink())
+                except OSError:
+                    continue  # fechado durante a listagem
+                if target.startswith(self.name):
+                    left_open.append(target)
+            super().cleanup()
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", CheckedFolder)
+    from pdf2docx import Converter
+    monkeypatch.setattr(Converter, "convert", lambda self, *args, **kwargs: 1 / 0)  # falha no meio da conversão
+    assert post(client, "split-pdf", ("a.pdf", make_pdf()), pages="9").status_code == 400  # erro com o PDF já aberto
+    assert post(client, "pdf-to-word", ("a.pdf", make_pdf())).status_code == 500
+    assert post(client, "jpg-to-pdf", ("a.jpg", make_photo((200, 150)))).status_code == 200
+    assert left_open == []
+
+
 def test_same_file_name_never_returns_previous_result(client):
     first = post(client, "split-pdf", ("mesmo.pdf", make_pdf(3)))
     second = post(client, "split-pdf", ("mesmo.pdf", make_pdf(2)))
