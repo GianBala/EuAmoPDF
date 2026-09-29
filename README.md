@@ -45,7 +45,7 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 
 - **Comprimir imagens** JPG, PNG e WebP, uma ou várias de uma vez, com quatro níveis de compressão, tamanho máximo, troca de formato, remoção dos dados da foto (localização, câmera) e o tamanho final estimado
 - **Remover fundo** com IA, deixando só o objeto principal: fundo transparente, branco, preto ou de outra cor. A imagem mantém a resolução, as cores e os pixels originais do objeto, e sai sem perda (PNG ou WebP)
-- Antes de baixar, uma **prévia editável** mostra esmaecido o que foi removido. Pinte por cima de uma parte apagada por engano (**Restaurar**) ou de um pedaço de fundo que ficou (**Apagar**): não precisa ser preciso, porque o app estende o traço pelas cores e bordas da imagem
+- Antes de baixar, uma **prévia editável** mostra com um véu vermelho o que foi removido, e **Ver como vai ficar** mostra o resultado final. Pinte por cima de uma parte apagada por engano (**Restaurar**) ou de um pedaço de fundo que ficou (**Apagar**): não precisa ser preciso, porque o app estende o traço pelas cores e bordas da imagem. Com a **Detecção inteligente** desligada, o pincel muda exatamente o que foi pintado
 
 ### ✏️ Editar e 🔒 Segurança
 
