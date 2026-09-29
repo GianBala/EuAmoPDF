@@ -1050,8 +1050,11 @@ def compress_images(files, form, tmp):
     if len(files) == 1 and kept:
         message = "A imagem já estava bem comprimida e ficou como estava."
     else:
-        prefix = f"{len(files)} imagens: de" if len(files) > 1 else "Reduzida de"
-        message = f"{prefix} {format_size(before)} para {format_size(after)} ({max(0, 1 - after / before):.0%} menor)."
+        # Trocar o formato (uma foto JPG em PNG sem perda, por exemplo) pode deixar o arquivo maior
+        grew = after > before
+        change = f"{after / before - 1:.0%} maior" if grew else f"{1 - after / before:.0%} menor"
+        prefix = f"{len(files)} imagens: de" if len(files) > 1 else "Ficou maior: de" if grew else "Reduzida de"
+        message = f"{prefix} {format_size(before)} para {format_size(after)} ({change})."
         if kept == 1:
             message += " Uma já estava bem comprimida e ficou como estava."
         elif kept:

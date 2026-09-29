@@ -313,9 +313,10 @@ async function requestEstimate() {
         } else {
             const { antes, depois } = await response.json();
             const percent = Math.round((1 - depois / antes) * 100);
-            box.textContent = percent > 0
-                ? `Tamanho estimado: ~${formatSize(depois)} (hoje ${formatSize(antes)}, ${percent}% menor)`
-                : `Tamanho estimado: ~${formatSize(antes)}. Com estas opções, o arquivo praticamente não diminui.`;
+            const change = percent > 0 ? `${percent}% menor` : `${-percent}% maior`;  // outro formato pode aumentar
+            box.textContent = percent === 0
+                ? `Tamanho estimado: ~${formatSize(antes)}. Com estas opções, o arquivo praticamente não diminui.`
+                : `Tamanho estimado: ~${formatSize(depois)} (hoje ${formatSize(antes)}, ${change})`;
         }
         box.classList.remove('calculating');
     } catch (error) {

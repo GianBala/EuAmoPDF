@@ -404,6 +404,14 @@ def test_compress_image_keeps_already_compressed_original(client):
     assert "já estava bem comprimida" in unquote(r.headers["X-Mensagem"])
 
 
+def test_compress_image_says_when_the_result_is_bigger(client):
+    photo = make_photo((400, 300))  # foto JPG que, em PNG sem perda, fica bem maior
+    r = compress_image(client, ("foto.jpg", photo), image_level="leve", image_format="png")
+    message = unquote(r.headers["X-Mensagem"])
+    assert len(r.data) > len(photo)
+    assert message.startswith("Ficou maior") and "% maior" in message
+
+
 def test_compress_many_images_into_zip_without_name_clashes(client):
     r = compress_image(client, ("foto.jpg", make_photo((400, 300))), ("foto.jpg", make_photo((300, 200))),
                        ("tela.png", make_photo((300, 200), fmt="PNG")))
