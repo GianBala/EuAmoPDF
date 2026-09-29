@@ -554,8 +554,17 @@ def edit_metadata(files, form, tmp):
         doc.del_xml_metadata()
         return pdf_bytes(doc), f"{base}.pdf", "Todos os metadados foram removidos."
     meta = {key: form.get(field, '').strip() for key, field in META_FIELDS.items()}
-    moments = {key: form_date(form.get(field, '').strip()) for key, field in META_DATES.items()}
-    doc.set_metadata(meta | {key: pdf_date(m) if m else '' for key, m in moments.items()})
+    shown = read_metadata(doc)
+    dates, moments = {}, {}
+    for key, field in META_DATES.items():
+        moment = form_date(form.get(field, '').strip())
+        if moment and moment == form_date(shown[field]):
+            # Não foi mexida: fica como estava, com o fuso que tinha ou sem nenhum (a interface
+            # mostra no fuso deste computador, e regravar assim trocaria ou inventaria o fuso)
+            dates[key], moments[key] = doc.metadata[key], parse_pdf_date(doc.metadata[key])
+        else:
+            dates[key], moments[key] = pdf_date(moment) if moment else '', moment
+    doc.set_metadata(meta | dates)
     xmp = doc.get_xml_metadata()
     if xmp:
         values = meta | {key: m.isoformat(timespec='seconds') if m else '' for key, m in moments.items()}
