@@ -1,10 +1,13 @@
 import hashlib
 import io
 from datetime import datetime
+import subprocess
+import sys
 import tempfile
 import types
 import zipfile
 from pathlib import Path
+from unittest import mock
 from urllib.parse import unquote
 
 import numpy as np
@@ -1174,6 +1177,72 @@ def test_word_to_pdf(client):
 def test_corrupted_office_file_is_reported(client):
     r = post(client, "word-to-pdf", ("quebrado.docx", b"PK\x03\x04lixo"))
     assert r.status_code == 400
+
+
+# O LibreOffice e o Microsoft Office simulados: estes testes rodam em qualquer sistema, com ou sem eles
+
+@pytest.fixture
+def fake_soffice(monkeypatch):
+    """Troca o LibreOffice por um que só registra a chamada; devolve a lista de chamadas."""
+    calls = []
+    monkeypatch.setattr(euamopdf, "find_soffice", lambda: "soffice")
+    monkeypatch.setattr(euamopdf, "msoffice_to_pdf", mock.Mock(side_effect=OSError("sem Office")))  # no Windows
+    monkeypatch.setattr(euamopdf.subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+    return calls
+
+
+def test_libreoffice_runs_with_its_own_profile_and_a_time_limit(client, fake_soffice):
+    post(client, "word-to-pdf", ("a.docx", b"PK"))
+    post(client, "word-to-pdf", ("a.docx", b"PK"))
+    (first, options), (second, _) = fake_soffice
+    assert options["timeout"] == euamopdf.LIBREOFFICE_TIMEOUT
+    profiles = [next(a for a in args if a.startswith("-env:UserInstallation=")) for args in (first, second)]
+    outdir = Path(first[first.index("--outdir") + 1])
+    assert profiles[0] == f"-env:UserInstallation={(outdir / 'perfil').as_uri()}"  # dentro da pasta da conversão
+    assert profiles[0] != profiles[1]  # cada conversão com o seu
+
+
+@pytest.mark.parametrize("run, message", [
+    (lambda args, **kwargs: None, "não conseguiu converter"),  # sai sem erro e sem PDF
+    (mock.Mock(side_effect=subprocess.TimeoutExpired("soffice", 180)), "demorou demais"),
+])
+def test_libreoffice_failures_are_reported(client, fake_soffice, monkeypatch, run, message):
+    monkeypatch.setattr(euamopdf.subprocess, "run", run)
+    r = post(client, "word-to-pdf", ("a.docx", b"PK"))
+    assert r.status_code == 400 and message in r.get_data(as_text=True)
+
+
+def test_libreoffice_is_found_in_program_files_on_windows(monkeypatch, tmp_path):
+    exe = tmp_path / "LibreOffice" / "program" / "soffice.exe"
+    exe.parent.mkdir(parents=True)
+    exe.touch()
+    monkeypatch.setattr(euamopdf.sys, "platform", "win32")
+    monkeypatch.setattr(euamopdf.shutil, "which", lambda name: None)  # o instalador não põe no PATH
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path))
+    assert euamopdf.find_soffice() == str(exe)
+
+
+@pytest.mark.parametrize("app_name, opened_files, save", [
+    ("Word.Application", "Documents", "SaveAs"),
+    ("Excel.Application", "Workbooks", "ExportAsFixedFormat"),
+    ("PowerPoint.Application", "Presentations", "SaveAs"),
+])
+def test_microsoft_office_uses_its_own_instance_and_always_quits(monkeypatch, tmp_path, app_name, opened_files, save):
+    office = mock.MagicMock()
+    document = getattr(office, opened_files).Open.return_value
+    getattr(document, save).side_effect = RuntimeError("falhou no meio")
+    client_module = types.SimpleNamespace(DispatchEx=mock.Mock(return_value=office))
+    pythoncom = mock.Mock()
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=client_module))
+    monkeypatch.setitem(sys.modules, "win32com.client", client_module)
+    with pytest.raises(RuntimeError):
+        euamopdf.msoffice_to_pdf(tmp_path / "a", tmp_path / "a.pdf", app_name)
+    client_module.DispatchEx.assert_called_once_with(app_name)  # instância própria: não fecha o Office do usuário
+    assert getattr(office, opened_files).Open.call_args.kwargs["ReadOnly"] is True
+    document.Close.assert_called_once()
+    office.Quit.assert_called_once()
+    pythoncom.CoUninitialize.assert_called_once()
 
 
 # --- Validação ---
