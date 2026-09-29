@@ -647,17 +647,22 @@ def test_background_mask_route_returns_the_model_mask(client, fake_model):
     assert mask.getpixel((300, 200)) == 255 and mask.getpixel((0, 0)) == 0
 
 
-def test_refine_restores_the_whole_part_that_was_missed(client):
-    img, mask = scene()
-    # traço pequeno, desenhado numa prévia com metade do tamanho da imagem
-    r = refine(client, img, mask, dot(img.size, (300, 150), scale=0.5), "restaurar")
-    new = opened(r.data)
-    assert (region(new, (242, 62, 358, 238)) > 127).mean() > 0.95  # o retângulo da direita voltou inteiro
-    assert (region(new, (40, 60, 160, 240)) == 255).all()          # o da esquerda continua
+def background_restored(new):
+    """Fração do fundo azul (fora dos dois retângulos) que foi restaurada por engano."""
     outside = np.asarray(new).copy()
-    outside[60:241, 40:161] = 0
+    outside[58:243, 38:163] = 0
     outside[58:243, 238:363] = 0
-    assert (outside > 127).mean() < 0.02                             # o fundo não voltou
+    return (outside > 127).mean()
+
+
+def test_refine_restores_the_rest_of_a_part_the_model_cut(client):
+    img, mask = scene()
+    ImageDraw.Draw(mask).rectangle((115, 100, 160, 200), fill=0)  # o modelo cortou um pedaço do retângulo
+    # um clique só, numa prévia com metade do tamanho da imagem
+    new = opened(refine(client, img, mask, dot(img.size, (138, 150), radius=10, scale=0.5), "restaurar").data)
+    assert (region(new, (117, 102, 158, 198)) > 127).mean() > 0.95
+    assert background_restored(new) < 0.02
+    assert (region(new, (242, 62, 358, 238)) == 0).all()  # o outro retângulo não foi tocado
 
 
 def test_refine_erases_leftover_background_but_keeps_the_object(client):
@@ -668,13 +673,57 @@ def test_refine_erases_leftover_background_but_keeps_the_object(client):
     assert (region(new, (42, 62, 158, 238)) == 255).all()
 
 
-def test_refine_only_changes_the_region_touched_by_the_stroke(client):
+def test_refine_restores_a_whole_object_the_model_missed_painted_over(client):
     img, _ = scene()
-    nothing = Image.new("L", img.size, 0)  # o 'modelo' não achou nenhum dos dois
-    new = opened(refine(client, img, nothing, dot(img.size, (100, 150)), "restaurar").data)
+    nothing = Image.new("L", img.size, 0)  # o modelo não achou nenhum dos dois
+    stroke = Image.new("RGBA", img.size)
+    ImageDraw.Draw(stroke).line([(70, 90), (130, 210)], fill=(40, 200, 80, 255), width=16)
+    new = opened(refine(client, img, nothing, stroke, "restaurar").data)
     assert (region(new, (42, 62, 158, 238)) > 127).mean() > 0.95
-    assert (region(new, (242, 62, 358, 238)) == 0).all()  # o outro retângulo, que não foi tocado, não muda
+    assert (region(new, (242, 62, 358, 238)) == 0).all()  # o outro retângulo, que não foi pintado, não muda
+    assert background_restored(new) < 0.02
 
+
+def test_refine_makes_a_half_transparent_part_solid(client):
+    img, mask = scene()
+    ImageDraw.Draw(mask).rectangle((240, 60, 360, 240), fill=150)  # o modelo ficou em dúvida no da direita
+    stroke = Image.new("RGBA", img.size)
+    ImageDraw.Draw(stroke).line([(260, 90), (340, 210)], fill=(40, 200, 80, 255), width=16)  # pintado por dentro dele
+    new = opened(refine(client, img, mask, stroke, "restaurar").data)
+    assert (region(new, (244, 64, 356, 236)) >= 250).mean() > 0.95
+
+
+def test_refine_erases_a_half_transparent_leftover(client):
+    img, mask = scene()
+    ImageDraw.Draw(mask).rectangle((170, 100, 225, 200), fill=110)  # fundo que ficou meio visível
+    new = opened(refine(client, img, mask, dot(img.size, (198, 150)), "apagar").data)
+    assert (region(new, (174, 104, 221, 196)) <= 5).mean() > 0.95
+    assert (region(new, (42, 62, 158, 238)) == 255).all()
+
+
+def test_refine_does_not_follow_a_stroke_that_spills_over(client):
+    img, mask = scene()
+    ImageDraw.Draw(mask).rectangle((115, 100, 160, 200), fill=0)
+    # traço grosso que começa no pedaço que faltou e passa um raio de pincel para o fundo azul
+    stroke = Image.new("RGBA", img.size)
+    ImageDraw.Draw(stroke).line([(130, 150), (170, 150)], fill=(40, 200, 80, 255), width=16)
+    new = np.asarray(opened(refine(client, img, mask, stroke, "restaurar").data))
+    assert (new[102:199, 117:159] > 127).mean() > 0.95
+    assert (new[143:158, 168:186] > 127).mean() < 0.5  # o fundo por onde o traço vazou não volta
+
+
+def test_refine_without_smart_detection_changes_exactly_what_was_painted(client):
+    img, mask = scene()
+    stroke = Image.new("RGBA", img.size)
+    ImageDraw.Draw(stroke).rectangle((180, 100, 220, 140), fill=(40, 200, 80, 255))  # só fundo azul
+    r = client.post("/background/refine", content_type="multipart/form-data", data={
+        "modo": "restaurar", "inteligente": "0", "file": (io.BytesIO(png_bytes(img)), "cena.png"),
+        "mascara": (io.BytesIO(png_bytes(mask)), "mascara.png"), "traco": (io.BytesIO(png_bytes(stroke)), "traco.png")})
+    new = np.asarray(opened(r.data))
+    assert (new[100:141, 180:221] == 255).all()        # o que foi pintado voltou, mesmo sendo fundo
+    changed = new != np.asarray(mask)
+    changed[100:141, 180:221] = False
+    assert not changed.any()                           # e nada além disso mudou
 
 @pytest.mark.parametrize("change, message", [
     ({"modo": "pintar"}, "restaurar e apagar"),
