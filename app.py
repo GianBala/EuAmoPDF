@@ -445,7 +445,8 @@ XMP_NS = {
     'x': 'adobe:ns:meta/', 'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
     'dc': 'http://purl.org/dc/elements/1.1/', 'pdf': 'http://ns.adobe.com/pdf/1.3/',
     'xmp': 'http://ns.adobe.com/xap/1.0/', 'xmpMM': 'http://ns.adobe.com/xap/1.0/mm/',
-    'pdfaid': 'http://www.aiim.org/pdfa/ns/id/',
+    'pdfaid': 'http://www.aiim.org/pdfa/ns/id/', 'exif': 'http://ns.adobe.com/exif/1.0/',
+    'photoshop': 'http://ns.adobe.com/photoshop/1.0/',
 }
 XMP_PROPERTIES = {  # chave no PyMuPDF: (prefixo, propriedade XMP, forma do valor)
     'title': ('dc', 'title', 'Alt'), 'author': ('dc', 'creator', 'Seq'), 'subject': ('dc', 'description', 'Alt'),
@@ -488,9 +489,10 @@ def pdf_date(moment):
     return moment.strftime('D:%Y%m%d%H%M%S') + f"{offset[:3]}'{offset[3:]}'"
 
 
-def update_xmp(xmp, values):
+def update_xmp(xmp, values, properties=XMP_PROPERTIES, drop=None):
     """Troca no XMP as propriedades editadas e mantém o resto (como a identificação PDF/A).
-    values: chave no PyMuPDF -> texto já no formato do XMP ('' apaga). None se o XMP for ilegível."""
+    values: chave em properties -> texto já no formato do XMP ('' apaga); drop(tag): se a
+    propriedade deve sair, qualquer que seja. None se o XMP for ilegível."""
     for prefix, uri in XMP_NS.items():
         ET.register_namespace(prefix, uri)
     try:
@@ -501,8 +503,14 @@ def update_xmp(xmp, values):
     descriptions = list(root.iter(f'{{{rdf}}}Description'))
     if not descriptions:
         return None
+    if drop:
+        for description in descriptions:
+            for tag in [t for t in description.attrib if drop(t)]:
+                del description.attrib[tag]
+            for old in [child for child in description if drop(child.tag)]:
+                description.remove(old)
     for key, value in values.items():
-        prefix, name, form = XMP_PROPERTIES[key]
+        prefix, name, form = properties[key]
         tag = f'{{{XMP_NS[prefix]}}}{name}'
         for description in descriptions:  # a propriedade pode vir como atributo ou como elemento
             description.attrib.pop(tag, None)
@@ -513,11 +521,13 @@ def update_xmp(xmp, values):
         prop = ET.SubElement(descriptions[0], tag)
         if form == 'text':
             prop.text = value
-        else:
-            item = ET.SubElement(ET.SubElement(prop, f'{{{rdf}}}{form}'), f'{{{rdf}}}li')
+            continue
+        container = ET.SubElement(prop, f'{{{rdf}}}{form}')
+        for text in [v.strip() for v in value.split(',') if v.strip()] if form == 'Bag' else [value]:
+            item = ET.SubElement(container, f'{{{rdf}}}li')
             if form == 'Alt':
                 item.set('{http://www.w3.org/XML/1998/namespace}lang', 'x-default')
-            item.text = value
+            item.text = text
     body = ET.tostring(root, encoding='unicode')
     return f'<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n{body}\n<?xpacket end="w"?>'
 
@@ -536,6 +546,8 @@ def read_metadata(doc):
 
 def edit_metadata(files, form, tmp):
     path, base = files[0]
+    if path.suffix != '.pdf':
+        return edit_image_metadata(path, base, form)
     doc = open_pdf(path)
     if form.get('meta_strip'):
         doc.set_metadata({})
@@ -553,6 +565,265 @@ def edit_metadata(files, form, tmp):
         else:
             doc.del_xml_metadata()  # ilegível: melhor sem XMP do que um contradizendo os campos
     return pdf_bytes(doc), f"{base}.pdf", "Metadados atualizados."
+
+
+# --- METADADOS DE IMAGEM ---
+# A imagem não é regravada (isso recomprimiria o JPEG): só os blocos de metadados do arquivo
+# (segmentos do JPEG, chunks do PNG e do WebP) são trocados, e os dados da imagem ficam
+# idênticos, byte a byte. EXIF, XMP e textos do PNG são atualizados juntos, porque cada
+# programa lê um deles.
+
+IMAGE_FIELDS = ('img_title', 'img_description', 'img_author', 'img_copyright', 'img_keywords', 'img_software', 'img_taken')
+IMAGE_EXIF_TEXT = {'img_description': 0x010E, 'img_author': 0x013B, 'img_copyright': 0x8298, 'img_software': 0x0131}
+IMAGE_EXIF_XP = {'img_title': 0x9C9B, 'img_author': 0x9C9D, 'img_keywords': 0x9C9E}  # campos do Windows, UTF-16
+EXIF_IFD, GPS_IFD, DATE_TAKEN, ORIENTATION, MAKE, MODEL = 0x8769, 0x8825, 0x9003, 0x0112, 0x010F, 0x0110
+IMAGE_XMP_PROPERTIES = {
+    'img_title': ('dc', 'title', 'Alt'), 'img_description': ('dc', 'description', 'Alt'),
+    'img_author': ('dc', 'creator', 'Seq'), 'img_copyright': ('dc', 'rights', 'Alt'),
+    'img_keywords': ('dc', 'subject', 'Bag'), 'img_software': ('xmp', 'CreatorTool', 'text'),
+    'img_taken': ('exif', 'DateTimeOriginal', 'text'),
+}
+PNG_TEXT = {'img_title': 'Title', 'img_description': 'Description', 'img_author': 'Author',
+            'img_copyright': 'Copyright', 'img_software': 'Software', 'img_taken': 'Creation Time'}
+XMP_ID = b'http://ns.adobe.com/xap/1.0/\x00'
+
+
+def exif_text(value):
+    """Texto de uma tag EXIF: quase todo programa grava UTF-8, que o Pillow lê como Latin-1."""
+    value = value.decode('latin-1') if isinstance(value, bytes) else str(value or '')
+    try:
+        value = value.encode('latin-1').decode('utf-8')
+    except UnicodeError:
+        pass
+    return value.strip('\x00 ')
+
+
+def exif_xp(value):
+    """Campo do Windows (XPTitle etc.): UTF-16."""
+    if isinstance(value, tuple):
+        value = bytes(value)
+    return value.decode('utf-16-le', errors='ignore').rstrip('\x00') if isinstance(value, bytes) else ''
+
+
+def is_gps(tag):
+    return tag.startswith(f"{{{XMP_NS['exif']}}}GPS")
+
+
+def xmp_values(xmp, properties):
+    """Valores atuais das propriedades no XMP; listas viram texto separado por vírgula."""
+    try:
+        root = ET.fromstring(xmp)
+    except ET.ParseError:
+        return {}
+    rdf = XMP_NS['rdf']
+    found = {}
+    for field, (prefix, name, _) in properties.items():
+        tag = f'{{{XMP_NS[prefix]}}}{name}'
+        for description in root.iter(f'{{{rdf}}}Description'):
+            if tag in description.attrib:
+                found[field] = description.attrib[tag]
+                break
+            prop = description.find(tag)
+            if prop is not None:
+                items = [li.text or '' for li in prop.iter(f'{{{rdf}}}li')]
+                found[field] = ', '.join(items) if items else (prop.text or '').strip()
+                break
+    return found
+
+
+def gps_text(gps):
+    """Coordenadas em graus decimais, para mostrar."""
+    def degrees(value, ref):
+        d, m, s = (float(v) for v in value)
+        return (-1 if ref in ('S', 'W') else 1) * (d + m / 60 + s / 3600)
+    try:
+        return f"{degrees(gps[2], gps[1]):.5f}, {degrees(gps[4], gps[3]):.5f}"
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return 'sim (sem coordenadas legíveis)'
+
+
+def image_parts(data):
+    """(formato, EXIF, XMP em texto, textos do PNG, tamanho, se tem transparência) sem decodificar a imagem."""
+    try:
+        img = Image.open(io.BytesIO(data))
+        with img:
+            fmt = 'JPEG' if img.format == 'MPO' else img.format
+            exif = img.getexif()
+            xmp = img.info.get('xmp') or img.info.get('XML:com.adobe.xmp') or ''
+            if not xmp and fmt == 'JPEG':  # o Pillow antes do 11 não expõe o XMP do JPEG em info
+                xmp = next((data[len(XMP_ID):] for marker, data in getattr(img, 'applist', [])
+                            if marker == 'APP1' and data.startswith(XMP_ID)), '')
+            texts = dict(img.text) if fmt == 'PNG' else {}
+            size, alpha = img.size, has_alpha(img)
+    except Exception:
+        raise UserError("O arquivo não é uma imagem válida.")
+    if fmt not in ('JPEG', 'PNG', 'WEBP'):
+        raise UserError("Metadados de imagem: use JPG, PNG ou WebP.")
+    return fmt, exif, xmp.decode('utf-8', 'replace') if isinstance(xmp, bytes) else xmp, texts, size, alpha
+
+
+def read_image_metadata(data):
+    fmt, exif, xmp, texts, _, _ = image_parts(data)
+    values = dict.fromkeys(IMAGE_FIELDS, '')
+    for field, key in PNG_TEXT.items():
+        values[field] = texts.get(key, '') or values[field]
+    for field, tag in IMAGE_EXIF_TEXT.items():
+        values[field] = exif_text(exif.get(tag)) or values[field]
+    for field, tag in IMAGE_EXIF_XP.items():
+        values[field] = exif_xp(exif.get(tag)) or values[field]
+    taken = exif.get_ifd(EXIF_IFD).get(DATE_TAKEN)
+    if taken:
+        values['img_taken'] = str(taken)
+    if xmp:  # o XMP é UTF-8 de verdade: quando tem o campo, vale ele
+        values.update({k: v for k, v in xmp_values(xmp, IMAGE_XMP_PROPERTIES).items() if v})
+    # data para o campo do navegador: '2026:09:29 14:30:00' ou ISO -> '2026-09-29T14:30:00'
+    m = re.match(r'(\d{4})[:-](\d\d)[:-](\d\d)[T ](\d\d):(\d\d)(?::(\d\d))?', values['img_taken'])
+    values['img_taken'] = f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}:{m[6] or '00'}" if m else ''
+    camera = ' '.join(filter(None, (exif_text(exif.get(MAKE)), exif_text(exif.get(MODEL)))))
+    gps = exif.get_ifd(GPS_IFD)
+    return values | {'tipo': 'imagem', 'camera': camera, 'localizacao': gps_text(gps) if gps else ''}
+
+
+def new_image_metadata(exif, xmp, form):
+    """(EXIF, XMP, textos do PNG) novos a partir do formulário."""
+    if form.get('meta_strip'):  # fica só o que muda a aparência: a orientação (o perfil de cor fica no arquivo)
+        kept = Image.Exif()
+        if ORIENTATION in exif:
+            kept[ORIENTATION] = exif[ORIENTATION]
+        return kept, None, {}
+    values = {field: form.get(field, '').strip() for field in IMAGE_FIELDS}
+    taken_iso = ''
+    if values['img_taken']:
+        try:
+            taken = datetime.fromisoformat(values['img_taken'])
+        except ValueError:
+            raise UserError(f"Data inválida: \"{values['img_taken']}\".")
+        taken_iso = taken.strftime('%Y-%m-%dT%H:%M:%S')
+        exif.get_ifd(EXIF_IFD)[DATE_TAKEN] = taken.strftime('%Y:%m:%d %H:%M:%S')
+    else:
+        exif.get_ifd(EXIF_IFD).pop(DATE_TAKEN, None)
+    for field, tag in IMAGE_EXIF_TEXT.items():
+        if values[field]:
+            exif[tag] = values[field].encode('utf-8')
+        elif tag in exif:
+            del exif[tag]
+    for field, tag in IMAGE_EXIF_XP.items():
+        if values[field]:
+            exif[tag] = values[field].encode('utf-16-le') + b'\x00\x00'
+        elif tag in exif:
+            del exif[tag]
+    strip_gps = bool(form.get('img_strip_gps'))
+    if strip_gps and GPS_IFD in exif:
+        del exif[GPS_IFD]
+    values['img_taken'] = taken_iso
+    new_xmp = update_xmp(xmp, values, IMAGE_XMP_PROPERTIES, drop=is_gps if strip_gps else None) if xmp else None
+    texts = {key: values[field] for field, key in PNG_TEXT.items() if values[field]}
+    return exif, new_xmp, texts
+
+
+def jpeg_segment(marker, payload):
+    if len(payload) > 65533:
+        raise UserError("Os metadados ficaram grandes demais para um JPEG.")
+    return bytes((0xFF, marker)) + (len(payload) + 2).to_bytes(2, 'big') + payload
+
+
+def rewrite_jpeg(data, tiff, xmp, strip):
+    """Troca os segmentos de EXIF e XMP; os dados da imagem (a partir do SOS) ficam iguais."""
+    head, others, pos = [], [], 2
+    while True:
+        if pos + 4 > len(data) or data[pos] != 0xFF:
+            raise UserError("O JPEG está corrompido.")
+        marker = data[pos + 1]
+        if marker == 0xDA:  # início dos dados da imagem: daqui em diante nada muda
+            rest = data[pos:]
+            break
+        end = pos + 2 + int.from_bytes(data[pos + 2:pos + 4], 'big')
+        segment, body = data[pos:end], data[pos + 4:end]
+        pos = end
+        if marker == 0xE1 and (body.startswith(b'Exif\x00\x00') or body.startswith(XMP_ID)
+                               or body.startswith(b'http://ns.adobe.com/xmp/extension/')):
+            continue  # EXIF e XMP antigos: saem, os novos entram abaixo
+        if strip and (marker == 0xED or marker == 0xFE):  # IPTC (Photoshop) e comentário
+            continue
+        (head if marker == 0xE0 and not others else others).append(segment)  # JFIF fica primeiro
+    new = []
+    if tiff:
+        new.append(jpeg_segment(0xE1, b'Exif\x00\x00' + tiff))
+    if xmp:
+        new.append(jpeg_segment(0xE1, XMP_ID + xmp.encode('utf-8')))
+    return b'\xff\xd8' + b''.join(head + new + others) + rest
+
+
+def png_chunk(kind, payload):
+    return len(payload).to_bytes(4, 'big') + kind + payload + zlib.crc32(kind + payload).to_bytes(4, 'big')
+
+
+def rewrite_png(data, tiff, xmp, texts, strip):
+    """Troca o eXIf e os textos de metadados; IDAT e o resto ficam iguais."""
+    managed = {key.encode('latin-1') for key in PNG_TEXT.values()} | {b'XML:com.adobe.xmp'}
+    new = []
+    if tiff:
+        new.append(png_chunk(b'eXIf', tiff))
+    for key, text in list(texts.items()) + ([('XML:com.adobe.xmp', xmp)] if xmp else []):
+        # iTXt: palavra-chave, sem compressão, idioma e tradução vazios, texto em UTF-8
+        new.append(png_chunk(b'iTXt', key.encode('latin-1') + b'\x00\x00\x00\x00\x00' + text.encode('utf-8')))
+    out, pos = [data[:8]], 8
+    while pos < len(data):
+        length = int.from_bytes(data[pos:pos + 4], 'big')
+        kind, chunk = data[pos + 4:pos + 8], data[pos:pos + 12 + length]
+        pos += 12 + length
+        if kind == b'eXIf' or (strip and kind == b'tIME'):
+            continue
+        if kind in (b'tEXt', b'zTXt', b'iTXt') and (strip or chunk[8:].split(b'\x00', 1)[0] in managed):
+            continue
+        if kind == b'IDAT' and new:  # metadados antes dos dados da imagem
+            out.extend(new)
+            new = []
+        out.append(chunk)
+    return b''.join(out)
+
+
+def rewrite_webp(data, tiff, xmp, size, alpha):
+    """Troca os chunks EXIF e XMP; os dados da imagem ficam iguais. Um WebP simples ganha o
+    cabeçalho estendido (VP8X), que é onde se declara que há metadados."""
+    chunks, pos = [], 12
+    while pos + 8 <= len(data):
+        kind, length = data[pos:pos + 4], int.from_bytes(data[pos + 4:pos + 8], 'little')
+        chunks.append((kind, data[pos + 8:pos + 8 + length]))
+        pos += 8 + length + (length & 1)
+    chunks = [(k, c) for k, c in chunks if k not in (b'EXIF', b'XMP ')]
+    if tiff:
+        chunks.append((b'EXIF', tiff))
+    if xmp:
+        chunks.append((b'XMP ', xmp.encode('utf-8')))
+    if chunks and chunks[0][0] == b'VP8X':
+        flags = chunks[0][1][0] & ~0x0C
+    elif tiff or xmp:
+        flags = 0x10 if alpha else 0  # WebP simples: cria o VP8X
+        chunks.insert(0, (b'VP8X', bytes(4) + (size[0] - 1).to_bytes(3, 'little') + (size[1] - 1).to_bytes(3, 'little')))
+    else:
+        flags = None
+    if flags is not None:
+        flags |= (0x08 if tiff else 0) | (0x04 if xmp else 0)
+        chunks[0] = (b'VP8X', bytes([flags]) + chunks[0][1][1:])
+    body = b'WEBP' + b''.join(k + len(c).to_bytes(4, 'little') + c + (b'\x00' if len(c) & 1 else b'') for k, c in chunks)
+    return b'RIFF' + len(body).to_bytes(4, 'little') + body
+
+
+def edit_image_metadata(path, base, form):
+    data = path.read_bytes()
+    fmt, exif, xmp, _, size, alpha = image_parts(data)
+    exif, new_xmp, texts = new_image_metadata(exif, xmp, form)
+    tiff = exif.tobytes()[6:] if len(exif) else None  # sem o prefixo "Exif\0\0" do JPEG
+    strip = bool(form.get('meta_strip'))
+    if fmt == 'JPEG':
+        out = rewrite_jpeg(data, tiff, new_xmp, strip)
+    elif fmt == 'PNG':
+        out = rewrite_png(data, tiff, new_xmp, texts, strip)
+    else:
+        out = rewrite_webp(data, tiff, new_xmp, size, alpha)
+    message = "Todos os metadados foram removidos (a orientação e o perfil de cor ficaram)." if strip else "Metadados atualizados."
+    return out, f"{base}{path.suffix}", message
 
 
 def number_pages(files, form, tmp):
@@ -1128,7 +1399,7 @@ ACTIONS = {
     "unlock-pdf": (unlock_pdf, PDF, False),
     "watermark-pdf": (watermark_pdf, PDF, False),
     "number-pages": (number_pages, PDF, False),
-    "edit-metadata": (edit_metadata, PDF, False),
+    "edit-metadata": (edit_metadata, PDF + WEB_IMAGES, False),
     "split-pdf": (split_pdf, PDF, False),
     "rotate-pdf": (rotate_pdf, PDF, False),
     "organize-pdf": (organize_pdf, PDF, False),
@@ -1263,9 +1534,12 @@ def background_refine():
 
 @app.route('/metadata', methods=['POST'])
 def current_metadata():
-    """Metadados do PDF escolhido, para a interface preencher os campos."""
+    """Metadados do PDF ou da imagem escolhida, para a interface preencher os campos."""
     f = request.files.get('file')
-    return read_metadata(open_pdf(f.read() if f else b''))
+    data = f.read() if f else b''
+    if f and not f.filename.lower().endswith('.pdf'):
+        return read_image_metadata(data)
+    return read_metadata(open_pdf(data)) | {'tipo': 'pdf'}
 
 @app.route('/estimate', methods=['POST'])
 def estimate_size():

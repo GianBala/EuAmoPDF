@@ -52,6 +52,7 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 - **Marca d'água** em texto, na diagonal de todas as páginas
 - **Numerar páginas** no rodapé (`1`, `1 / 10` ou `Página 1 de 10`)
 - **Editar metadados**: título, autor, assunto, palavras-chave, aplicativo, produtor e datas, já preenchidos com os dados atuais, ou remover todos. O pacote XMP, que vários leitores de PDF mostram no lugar dos outros campos, é atualizado junto
+- **Editar metadados de imagens** JPG, PNG e WebP: título, descrição, autor, direitos autorais, palavras-chave, software e data da foto, com a câmera e a localização à vista. Dá para **remover a localização (GPS)** ou todos os metadados (a orientação e o perfil de cor ficam). A imagem não é regravada: só os blocos de metadados mudam, e os dados da imagem ficam idênticos. EXIF, XMP e textos do PNG são atualizados juntos
 - **Proteger** com senha (AES-256) e **remover senha** ou restrições de impressão e cópia
 
 </td>

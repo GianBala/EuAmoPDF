@@ -326,12 +326,26 @@ async function requestEstimate() {
 // --- Editar metadados ---
 
 let metadataRequest = 0;
-const metadataInputs = () => document.querySelectorAll('.meta-grid input');
+
+// Mostra os campos do tipo de arquivo (pdf ou imagem); os outros ficam desativados e não são enviados
+function showMetadataKind(kind, info = {}) {
+    const strip = $('meta-strip').checked;
+    document.querySelectorAll('.meta-grid').forEach((grid) => {
+        grid.hidden = grid.dataset.kind !== kind;
+        grid.querySelectorAll('input').forEach((input) => { input.disabled = grid.hidden || strip; });
+    });
+    const details = [info.camera && `Câmera: ${info.camera}`, info.localizacao && `Localização: ${info.localizacao}`].filter(Boolean);
+    $('meta-info').textContent = details.join(' · ');
+    $('meta-info').hidden = !details.length;
+    $('meta-gps').hidden = !info.localizacao;
+    $('meta-gps').querySelector('input').disabled = !info.localizacao || strip;
+}
 
 async function loadMetadata() {
     if (!tool.fields.split(' ').includes('metadata')) return;
     const request = ++metadataRequest;  // ignora a resposta de um arquivo que já foi trocado
-    metadataInputs().forEach((input) => { input.value = ''; });
+    document.querySelectorAll('.meta-grid input').forEach((input) => { input.value = ''; });
+    showMetadataKind(null);
     if (files.length !== 1) return;
     const data = new FormData();
     data.append('file', files[0]);
@@ -342,9 +356,11 @@ async function loadMetadata() {
             setStatus(await response.text(), 'error');
             return;
         }
-        for (const [name, value] of Object.entries(await response.json())) {
+        const values = await response.json();
+        for (const [name, value] of Object.entries(values)) {
             if (form.elements[name]) form.elements[name].value = value;
         }
+        showMetadataKind(values.tipo, values);
     } catch {
         // sem os valores atuais, os campos ficam em branco e ainda dá para preenchê-los
     }
@@ -352,7 +368,8 @@ async function loadMetadata() {
 
 // "Remover todos" desativa os campos, que então não são enviados
 $('meta-strip').addEventListener('change', () => {
-    metadataInputs().forEach((input) => { input.disabled = $('meta-strip').checked; });
+    document.querySelectorAll('.meta-grid:not([hidden]) input, #meta-gps:not([hidden]) input')
+        .forEach((input) => { input.disabled = $('meta-strip').checked; });
 });
 
 // --- Remover fundo: prévia editável ---

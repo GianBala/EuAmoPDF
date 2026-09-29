@@ -191,6 +191,7 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .meta-grid label { margin-bottom: 0; }
 .meta-grid input { margin-top: 6px; font-weight: 400; }
 .meta-strip { margin-top: 14px; }
+.meta-info { margin: 14px 0 0; }
 
 dialog.wide { width: min(1100px, calc(100vw - 32px)); }
 form.editing #drop, form.editing #file-list, form.editing #page-info { display: none; }
