@@ -10,7 +10,7 @@ from urllib.parse import unquote
 import numpy as np
 import pymupdf
 import pytest
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 import app as euamopdf
 
@@ -724,15 +724,52 @@ def test_refine_does_not_follow_a_stroke_that_spills_over(client):
 def test_refine_without_smart_detection_changes_exactly_what_was_painted(client):
     img, mask = scene()
     stroke = Image.new("RGBA", img.size)
-    ImageDraw.Draw(stroke).rectangle((180, 100, 220, 140), fill=(40, 200, 80, 255))  # só fundo azul
+    # um pedaço do retângulo que o modelo não achou: com a detecção, ele voltaria inteiro
+    ImageDraw.Draw(stroke).rectangle((250, 100, 290, 140), fill=(40, 200, 80, 255))
     r = client.post("/background/refine", content_type="multipart/form-data", data={
         "modo": "restaurar", "inteligente": "0", "file": (io.BytesIO(png_bytes(img)), "cena.png"),
         "mascara": (io.BytesIO(png_bytes(mask)), "mascara.png"), "traco": (io.BytesIO(png_bytes(stroke)), "traco.png")})
     new = np.asarray(opened(r.data))
-    assert (new[100:141, 180:221] == 255).all()        # o que foi pintado voltou, mesmo sendo fundo
+    assert (new[100:141, 250:291] == 255).all()        # o que foi pintado voltou
     changed = new != np.asarray(mask)
-    changed[100:141, 180:221] = False
+    changed[100:141, 250:291] = False
     assert not changed.any()                           # e nada além disso mudou
+
+
+def textured(size, rgb, seed):
+    """Cor com a textura de uma foto: cada canal varia um pouco em volta do valor dado."""
+    return Image.merge("RGB", [noise(size, 12, seed + i).point(lambda v, c=c: min(255, max(0, c - 32 + v // 4)))
+                               for i, c in enumerate(rgb)])
+
+
+@pytest.mark.parametrize("mode", ["restaurar", "apagar"])
+def test_refine_does_not_spread_to_a_color_found_only_near_the_stroke(client, mode):
+    """Uma cor que só aparece perto do traço (no fundo ao restaurar, no objeto ao apagar) não vai
+    junto com a correção. A versão que partia de toda a vizinhança do traço marcada como o lado
+    pedido estragava aqui uma área quase 7 vezes maior que o erro."""
+    size, restore = (400, 300), mode == "restaurar"
+    img = textured(size, (60, 110, 170), 1)  # fundo azul
+    obj = Image.new("L", size, 0)
+    ImageDraw.Draw(obj).rectangle((60, 60, 220, 240), fill=255)
+    stain = Image.new("L", size, 0)
+    if restore:  # mancha verde no fundo, ao lado do pedaço do objeto que faltou
+        ImageDraw.Draw(stain).ellipse((200, 80, 320, 200), fill=255)
+        img.paste(textured(size, (60, 170, 80), 4), mask=stain)
+        img.paste(textured(size, (230, 190, 50), 7), mask=obj)
+    else:  # mancha vermelha no objeto, ao lado do fundo que sobrou
+        ImageDraw.Draw(stain).ellipse((130, 80, 250, 200), fill=255)
+        img.paste(textured(size, (230, 190, 50), 7), mask=obj)
+        img.paste(textured(size, (200, 60, 60), 10), mask=ImageChops.multiply(stain, obj))
+    gt = np.asarray(obj) > 0
+    yy, xx = np.ogrid[:size[1], :size[0]]
+    error = ((xx - 220) ** 2 + (yy - 140) ** 2 <= 30 ** 2) & (gt if restore else ~gt)
+    mask = Image.fromarray(((gt ^ error) * 255).astype(np.uint8))
+    stroke = Image.new("RGBA", size)
+    ImageDraw.Draw(stroke).line([(205, 132), (210, 148)] if restore else [(232, 132), (238, 148)],
+                                fill=(40, 200, 80, 255), width=10)
+    new = np.asarray(opened(refine(client, img, mask, stroke, mode).data)) > 127
+    assert (new[error] == restore).mean() > 0.95
+    assert ((new != (np.asarray(mask) > 127)) & ~error).sum() < 0.05 * error.sum()
 
 @pytest.mark.parametrize("change, message", [
     ({"modo": "pintar"}, "restaurar e apagar"),
