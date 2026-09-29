@@ -126,7 +126,7 @@ venv/bin/pip install -r requirements-dev.txt
 venv/bin/pytest
 ```
 
-Os testes geram os PDFs e as imagens na hora e cobrem todas as ferramentas, as mensagens de erro, a segurança (nomes de arquivo maliciosos, requisições de outros sites) e a limpeza dos arquivos temporários. Os testes do Office e do OCR são pulados quando o LibreOffice ou o Tesseract não estão instalados. O [GitHub Actions](.github/workflows/tests.yml) roda tudo no Linux, com LibreOffice e Tesseract, e no Windows.
+Os testes geram os PDFs e as imagens na hora e cobrem todas as ferramentas, as mensagens de erro, a segurança (nomes de arquivo maliciosos, requisições de outros sites) e a limpeza dos arquivos temporários. Os testes do Office e do OCR são pulados quando o LibreOffice ou o Tesseract não estão instalados. O [GitHub Actions](.github/workflows/tests.yml) roda tudo no Linux, com LibreOffice e Tesseract, e no Windows, com o OCR e o modelo de remover fundo; roda também com a versão mais antiga de cada dependência que o `requirements.txt` aceita, no Python 3.10.
 
 ## Licença
 
