@@ -20,14 +20,35 @@ jobs:
       - name: Instalar LibreOffice e Tesseract
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress tesseract-ocr tesseract-ocr-por
+      - name: Baixar os idiomas do OCR (o PyMuPDF já traz o Tesseract)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/tessdata"
+          for lang in por eng; do
+            curl -sSfL -o "$RUNNER_TEMP/tessdata/$lang.traineddata" "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$lang.traineddata"
+          done
+          echo "TESSDATA_PREFIX=$RUNNER_TEMP/tessdata" >> "$GITHUB_ENV"
       - run: pip install -r requirements-dev.txt
       - name: Guardar o modelo de remover fundo entre execuções
-        if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
-          path: ~/.cache/euamopdf
+          path: ${{ runner.os == 'Windows' && '~\AppData\Local\euamopdf' || '~/.cache/euamopdf' }}  # app.bg_model_path()
           key: modelo-isnet-60920e99c454
       - name: Baixar o modelo de remover fundo (170 MB, só sem cache)
-        if: runner.os == 'Linux'
         run: python -c "import app; p = app.bg_model_path(); p.exists() or app.download_bg_model(p)"
       - run: pytest -v
+
+  minimas:
+    # O requirements.txt aceita versões antigas e o README promete Python 3.10: a data da foto se
+    # perdia no Pillow 10 e só aparecia assim
+    name: versões mínimas (Python 3.10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Instalar a menor série de cada dependência (Pillow>=10.0 vira Pillow==10.0.*)
+        run: sed -e 's/>=\(.*\)/==\1.*/' requirements.txt > minimas.txt && pip install -r minimas.txt pytest
+      - run: pytest -q
