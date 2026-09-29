@@ -108,6 +108,7 @@ function render() {
     updateDropText();
     showPageInfo();
     scheduleEstimate();
+    loadMetadata();
 }
 
 function updateDropText() {
@@ -321,6 +322,38 @@ async function requestEstimate() {
         if (error.name !== 'AbortError') box.textContent = '';
     }
 }
+
+// --- Editar metadados ---
+
+let metadataRequest = 0;
+const metadataInputs = () => document.querySelectorAll('.meta-grid input');
+
+async function loadMetadata() {
+    if (!tool.fields.split(' ').includes('metadata')) return;
+    const request = ++metadataRequest;  // ignora a resposta de um arquivo que já foi trocado
+    metadataInputs().forEach((input) => { input.value = ''; });
+    if (files.length !== 1) return;
+    const data = new FormData();
+    data.append('file', files[0]);
+    try {
+        const response = await fetch('/metadata', { method: 'POST', body: data });
+        if (request !== metadataRequest) return;
+        if (!response.ok) {
+            setStatus(await response.text(), 'error');
+            return;
+        }
+        for (const [name, value] of Object.entries(await response.json())) {
+            if (form.elements[name]) form.elements[name].value = value;
+        }
+    } catch {
+        // sem os valores atuais, os campos ficam em branco e ainda dá para preenchê-los
+    }
+}
+
+// "Remover todos" desativa os campos, que então não são enviados
+$('meta-strip').addEventListener('change', () => {
+    metadataInputs().forEach((input) => { input.disabled = $('meta-strip').checked; });
+});
 
 // --- Remover fundo: prévia editável ---
 

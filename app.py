@@ -17,8 +17,10 @@ import threading
 import time
 import urllib.request
 import webbrowser # Biblioteca para abrir o navegador
+import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
 from urllib.parse import quote, urlparse
@@ -428,6 +430,129 @@ NUMBER_FORMATS = {
     'n-de-t': "{n} / {t}",
     'pagina': "Página {n} de {t}",
 }
+
+
+# --- METADADOS ---
+# Um PDF guarda os metadados em dois lugares: o dicionário Info e o pacote XMP. Leitores como o
+# do Firefox e o Acrobat dão preferência ao XMP, então os dois são atualizados juntos.
+
+META_FIELDS = {  # chave no PyMuPDF: campo do formulário
+    'title': 'meta_title', 'author': 'meta_author', 'subject': 'meta_subject', 'keywords': 'meta_keywords',
+    'creator': 'meta_creator', 'producer': 'meta_producer',
+}
+META_DATES = {'creationDate': 'meta_created', 'modDate': 'meta_modified'}
+XMP_NS = {
+    'x': 'adobe:ns:meta/', 'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+    'dc': 'http://purl.org/dc/elements/1.1/', 'pdf': 'http://ns.adobe.com/pdf/1.3/',
+    'xmp': 'http://ns.adobe.com/xap/1.0/', 'xmpMM': 'http://ns.adobe.com/xap/1.0/mm/',
+    'pdfaid': 'http://www.aiim.org/pdfa/ns/id/',
+}
+XMP_PROPERTIES = {  # chave no PyMuPDF: (prefixo, propriedade XMP, forma do valor)
+    'title': ('dc', 'title', 'Alt'), 'author': ('dc', 'creator', 'Seq'), 'subject': ('dc', 'description', 'Alt'),
+    'keywords': ('pdf', 'Keywords', 'text'), 'creator': ('xmp', 'CreatorTool', 'text'),
+    'producer': ('pdf', 'Producer', 'text'), 'creationDate': ('xmp', 'CreateDate', 'text'),
+    'modDate': ('xmp', 'ModifyDate', 'text'),
+}
+
+
+def parse_pdf_date(value):
+    """'D:20260929143000-03'00'' em datetime; None se vazia ou ilegível."""
+    m = re.match(r"D:(\d{4})(\d\d)?(\d\d)?(\d\d)?(\d\d)?(\d\d)?(Z|[+-]\d\d'?\d\d'?)?", value or '')
+    if not m:
+        return None
+    year, month, day, hour, minute, second, zone = m.groups()
+    tz = None
+    if zone == 'Z':
+        tz = timezone.utc
+    elif zone:
+        digits = re.sub(r'\D', '', zone)
+        tz = timezone((1 if zone[0] == '+' else -1) * timedelta(hours=int(digits[:2]), minutes=int(digits[2:4])))
+    try:
+        return datetime(int(year), int(month or 1), int(day or 1), int(hour or 0), int(minute or 0), int(second or 0), tzinfo=tz)
+    except ValueError:
+        return None
+
+
+def form_date(value):
+    """Data do formulário ('2026-09-29T14:30'), no fuso deste computador; None se vazia."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).astimezone()
+    except ValueError:
+        raise UserError(f"Data inválida: \"{value}\".")
+
+
+def pdf_date(moment):
+    offset = moment.strftime('%z')  # -0300
+    return moment.strftime('D:%Y%m%d%H%M%S') + f"{offset[:3]}'{offset[3:]}'"
+
+
+def update_xmp(xmp, values):
+    """Troca no XMP as propriedades editadas e mantém o resto (como a identificação PDF/A).
+    values: chave no PyMuPDF -> texto já no formato do XMP ('' apaga). None se o XMP for ilegível."""
+    for prefix, uri in XMP_NS.items():
+        ET.register_namespace(prefix, uri)
+    try:
+        root = ET.fromstring(xmp)
+    except ET.ParseError:
+        return None
+    rdf = XMP_NS['rdf']
+    descriptions = list(root.iter(f'{{{rdf}}}Description'))
+    if not descriptions:
+        return None
+    for key, value in values.items():
+        prefix, name, form = XMP_PROPERTIES[key]
+        tag = f'{{{XMP_NS[prefix]}}}{name}'
+        for description in descriptions:  # a propriedade pode vir como atributo ou como elemento
+            description.attrib.pop(tag, None)
+            for old in description.findall(tag):
+                description.remove(old)
+        if not value:
+            continue
+        prop = ET.SubElement(descriptions[0], tag)
+        if form == 'text':
+            prop.text = value
+        else:
+            item = ET.SubElement(ET.SubElement(prop, f'{{{rdf}}}{form}'), f'{{{rdf}}}li')
+            if form == 'Alt':
+                item.set('{http://www.w3.org/XML/1998/namespace}lang', 'x-default')
+            item.text = value
+    body = ET.tostring(root, encoding='unicode')
+    return f'<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n{body}\n<?xpacket end="w"?>'
+
+
+def read_metadata(doc):
+    """Metadados atuais, com os nomes dos campos do formulário."""
+    meta = doc.metadata or {}
+    values = {field: meta.get(key) or '' for key, field in META_FIELDS.items()}
+    for key, field in META_DATES.items():
+        moment = parse_pdf_date(meta.get(key))
+        if moment and moment.tzinfo:
+            moment = moment.astimezone()  # mostra no fuso deste computador
+        values[field] = moment.strftime('%Y-%m-%dT%H:%M:%S') if moment else ''
+    return values
+
+
+def edit_metadata(files, form, tmp):
+    path, base = files[0]
+    doc = open_pdf(path)
+    if form.get('meta_strip'):
+        doc.set_metadata({})
+        doc.del_xml_metadata()
+        return pdf_bytes(doc), f"{base}.pdf", "Todos os metadados foram removidos."
+    meta = {key: form.get(field, '').strip() for key, field in META_FIELDS.items()}
+    moments = {key: form_date(form.get(field, '').strip()) for key, field in META_DATES.items()}
+    doc.set_metadata(meta | {key: pdf_date(m) if m else '' for key, m in moments.items()})
+    xmp = doc.get_xml_metadata()
+    if xmp:
+        values = meta | {key: m.isoformat(timespec='seconds') if m else '' for key, m in moments.items()}
+        updated = update_xmp(xmp, values)
+        if updated:
+            doc.set_xml_metadata(updated)
+        else:
+            doc.del_xml_metadata()  # ilegível: melhor sem XMP do que um contradizendo os campos
+    return pdf_bytes(doc), f"{base}.pdf", "Metadados atualizados."
 
 
 def number_pages(files, form, tmp):
@@ -1003,6 +1128,7 @@ ACTIONS = {
     "unlock-pdf": (unlock_pdf, PDF, False),
     "watermark-pdf": (watermark_pdf, PDF, False),
     "number-pages": (number_pages, PDF, False),
+    "edit-metadata": (edit_metadata, PDF, False),
     "split-pdf": (split_pdf, PDF, False),
     "rotate-pdf": (rotate_pdf, PDF, False),
     "organize-pdf": (organize_pdf, PDF, False),
@@ -1134,6 +1260,12 @@ def background_refine():
             return paint_mask(mask, painted, mode == 'restaurar')
         return refine_mask(img, mask, painted, mode == 'restaurar')
     return png_response(process_uploads('remove-background', work))
+
+@app.route('/metadata', methods=['POST'])
+def current_metadata():
+    """Metadados do PDF escolhido, para a interface preencher os campos."""
+    f = request.files.get('file')
+    return read_metadata(open_pdf(f.read() if f else b''))
 
 @app.route('/estimate', methods=['POST'])
 def estimate_size():

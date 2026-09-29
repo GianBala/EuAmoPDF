@@ -88,6 +88,8 @@
             {{ tool('watermark-pdf', '💧', "Marca d'água", 'Escreva um texto na diagonal de todas as páginas.', 'text',
                     'O texto vai em cinza semitransparente, sem esconder o conteúdo da página.') }}
             {{ tool('number-pages', '🔢', 'Numerar páginas', 'Coloque o número no rodapé de cada página.', 'format') }}
+            {{ tool('edit-metadata', '🏷️', 'Editar metadados', 'Mude título, autor, datas e outras informações do PDF.', 'metadata',
+                    'Os campos já vêm com os dados atuais do PDF. O conteúdo das páginas não muda.') }}
         </div>
     </section>
 
@@ -229,6 +231,19 @@
                 <option value="png" selected>PNG: abre em qualquer programa</option>
                 <option value="webp">WebP: arquivo bem menor, mesma qualidade</option>
             </select>
+        </div>
+        <div class="field" data-field="metadata" hidden>
+            <div class="meta-grid">
+                <label>Título <input type="text" name="meta_title" autocomplete="off"></label>
+                <label>Autor <input type="text" name="meta_author" autocomplete="off"></label>
+                <label>Assunto <input type="text" name="meta_subject" autocomplete="off"></label>
+                <label>Palavras-chave <input type="text" name="meta_keywords" placeholder="separadas por vírgula" autocomplete="off"></label>
+                <label>Aplicativo de criação <input type="text" name="meta_creator" autocomplete="off"></label>
+                <label>Produtor do PDF <input type="text" name="meta_producer" autocomplete="off"></label>
+                <label>Criado em <input type="datetime-local" name="meta_created" step="1"></label>
+                <label>Modificado em <input type="datetime-local" name="meta_modified" step="1"></label>
+            </div>
+            <label class="check meta-strip"><input type="checkbox" name="meta_strip" id="meta-strip" value="1"> Remover todos os metadados</label>
         </div>
         <div class="field" data-field="dpi" hidden>
             <label for="dpi">Qualidade das imagens</label>
