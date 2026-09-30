@@ -1734,6 +1734,7 @@ if __name__ == '__main__':
         else:
             os.environ.pop('LD_LIBRARY_PATH', None)
     port = free_port()
+    print("O EuAmoPDF vive neste terminal: para encerrar, feche-o ou aperte Ctrl+C.")
     # O Timer aguarda 1 segundo para garantir que o servidor Flask já subiu
     Timer(1, webbrowser.open_new, [f"http://127.0.0.1:{port}/"]).start()
     app.run(host='127.0.0.1', port=port)

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Ponto de entrada do AppImage. O EuAmoPDF só fecha junto com o terminal em que roda. Num duplo
+# clique no arquivo, que não tem terminal nenhum, este script abre um e roda o AppImage de novo dentro dele.
+# APPIMAGE só existe com o AppImage aberto de verdade, e sem DISPLAY não há onde abrir um terminal:
+# nos dois casos o app roda direto, como acontece com o teste do build.
+if [ ! -t 0 ] && [ ! -t 1 ] && [ ! -t 2 ] && [ -n "$APPIMAGE" ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then
+    # nome:opção que manda o terminal rodar o resto da linha (o x-terminal-emulator vem primeiro:
+    # é o terminal escolhido pelo usuário em Debian, Ubuntu e derivados)
+    for terminal in x-terminal-emulator:-e gnome-terminal:-- konsole:-e xfce4-terminal:-x xterm:-e; do
+        if command -v "${terminal%%:*}" > /dev/null; then
+            # Se o app parar com erro, o terminal fica aberto para dar tempo de ler o motivo. Saída normal
+            # (0) e encerramento por sinal (Ctrl+C, kill, terminal fechado: 130, 143, 129) não contam
+            exec "${terminal%%:*}" "${terminal#*:}" sh -c \
+                '"$0"; s=$?; case $s in 0|129|130|143) ;; *) echo; echo "O EuAmoPDF parou com erro (código $s). Aperte Enter para fechar."; read -r _ ;; esac' "$APPIMAGE"
+        fi
+    done
+fi
+exec "$(dirname "$0")/usr/bin/EuAmoPDF/EuAmoPDF" "$@"
