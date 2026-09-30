@@ -1080,6 +1080,41 @@ def test_remove_all_image_metadata_keeps_orientation(client, fmt, ext):
     assert same_pixels(src, r.data)
 
 
+def iptc_photo():
+    """JPEG com IPTC como o do Photoshop: resumo MD5, outro recurso no bloco e textos em Latin-1."""
+    def dataset(number, value, record=2):
+        return bytes((0x1C, record, number)) + len(value).to_bytes(2, "big") + value
+    iptc = (dataset(0, b"\x00\x04") + dataset(5, "Título IPTC".encode("latin-1")) + dataset(25, b"praia") + dataset(25, b"sol")
+            + dataset(55, b"20260102") + dataset(60, b"030405-0300") + dataset(80, b"Ana")
+            + dataset(90, "São Paulo".encode("latin-1")) + dataset(120, b"Legenda"))
+    def resource(number, data):
+        return b"8BIM" + number.to_bytes(2, "big") + b"\x00\x00" + len(data).to_bytes(4, "big") + data + b"\x00" * (len(data) & 1)
+    body = b"Photoshop 3.0\x00" + resource(0x03ED, bytes(16)) + resource(0x0404, iptc) + resource(0x0425, hashlib.md5(iptc).digest())
+    jpeg = make_photo((60, 40), fmt="JPEG")
+    return jpeg[:2] + b"\xff\xed" + (len(body) + 2).to_bytes(2, "big") + body + jpeg[2:]
+
+
+def test_jpeg_iptc_is_read_and_updated_keeping_the_rest(client):
+    from PIL import IptcImagePlugin
+    src = iptc_photo()
+    form = {k: v for k, v in image_metadata(client, src, "f.jpg").items() if k.startswith("img_")}
+    assert (form["img_title"], form["img_description"], form["img_author"], form["img_keywords"], form["img_taken"]) == \
+        ("Título IPTC", "Legenda", "Ana", "praia, sol", "2026-01-02T03:04:05")
+    r = post(client, "edit-metadata", ("f.jpg", src), **form | {"img_title": "Pôr do sol", "img_description": ""})
+    img = opened(r.data)
+    iptc = IptcImagePlugin.getiptcinfo(img)
+    assert iptc[(2, 5)] == "Pôr do sol".encode() and (2, 120) not in iptc  # senão a legenda voltaria na próxima leitura
+    assert iptc[(2, 25)] == [b"praia", b"sol"] and iptc[(2, 55)] == b"20260102"
+    assert iptc[(2, 90)] == "São Paulo".encode() and iptc[(1, 90)] == b"\x1b%G"  # o que não é do formulário fica, em UTF-8
+    body = next(data for marker, data in img.applist if marker == "APP13")
+    resources = euamopdf.photoshop_resources(body[len(b"Photoshop 3.0\x00"):])
+    assert [r[0] for r in resources] == [b"\x03\xed", b"\x04\x04", b"\x04\x25"]
+    assert resources[2][2] == hashlib.md5(resources[1][2]).digest()
+    assert image_metadata(client, r.data, "f.jpg")["img_description"] == ""
+    assert same_pixels(src, r.data)
+    assert "photoshop" not in opened(post(client, "edit-metadata", ("f.jpg", phone_photo()), **FOTO).data).info  # sem IPTC, não ganha um
+
+
 def test_jpeg_image_data_stays_byte_for_byte_identical(client):
     src = phone_photo("JPEG")
     out = post(client, "edit-metadata", ("foto.jpg", src), **FOTO).data

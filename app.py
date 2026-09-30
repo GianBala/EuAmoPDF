@@ -600,6 +600,11 @@ IMAGE_XMP_PROPERTIES = {
 PNG_TEXT = {'img_title': 'Title', 'img_description': 'Description', 'img_author': 'Author',
             'img_copyright': 'Copyright', 'img_software': 'Software', 'img_taken': 'Creation Time'}
 XMP_ID = b'http://ns.adobe.com/xap/1.0/\x00'
+# IPTC-IIM, no bloco do Photoshop (APP13) do JPEG: número do dataset no registro 2
+IPTC = {'img_title': 5, 'img_description': 120, 'img_author': 80, 'img_copyright': 116, 'img_keywords': 25}
+IPTC_DATE, IPTC_TIME, IPTC_UTF8 = 55, 60, b'\x1b%G'
+IPTC_BINARY = {0, 125, 200, 201, 202}  # no registro 2, os outros datasets são texto
+PHOTOSHOP_ID = b'Photoshop 3.0\x00'
 
 
 def exif_text(value):
@@ -659,8 +664,91 @@ def gps_text(gps):
         return 'sim (sem coordenadas legíveis)'
 
 
+def photoshop_resources(body):
+    """Recursos do bloco do Photoshop como [id, nome, dados]; None se ele não puder ser lido
+    inteiro (quando continua em outro segmento, por exemplo)."""
+    resources, pos = [], 0
+    while body[pos:pos + 4] == b'8BIM' and pos + 7 <= len(body):
+        start = pos + 6 + ((body[pos + 6] + 2) & ~1)  # o nome é uma string Pascal de tamanho par
+        size = int.from_bytes(body[start:start + 4], 'big')
+        if start + 4 + size > len(body):
+            return None
+        resources.append([body[pos + 4:pos + 6], body[pos + 6:start], body[start + 4:start + 4 + size]])
+        pos = start + 4 + size + (size & 1)
+    return resources if not body[pos:].strip(b'\x00') else None
+
+
+def iptc_records(data):
+    """Datasets do IPTC como ((registro, dataset), valor, bytes originais)."""
+    records, pos = [], 0
+    while pos + 5 <= len(data) and data[pos] == 0x1C:
+        head, size = 5, int.from_bytes(data[pos + 3:pos + 5], 'big')
+        if size & 0x8000:  # tamanho estendido: os bytes seguintes dizem o tamanho
+            head += size & 0x7FFF
+            size = int.from_bytes(data[pos + 5:pos + head], 'big')
+        records.append(((data[pos + 1], data[pos + 2]), data[pos + head:pos + head + size], data[pos:pos + head + size]))
+        pos += head + size
+    return records
+
+
+def iptc_values(data):
+    """Campos do formulário presentes no IPTC; repetidos (autores, palavras-chave) viram texto separado por vírgula."""
+    found = {}
+    for (record, dataset), value, _ in iptc_records(data):
+        if record == 2:
+            found.setdefault(dataset, []).append(exif_text(value))
+    values = {field: ', '.join(found[dataset]) for field, dataset in IPTC.items() if dataset in found}
+    date, time = found.get(IPTC_DATE, [''])[0], found.get(IPTC_TIME, ['000000'])[0]  # '20260929', '143000-0300'
+    if re.fullmatch(r'\d{8}', date) and re.match(r'\d{6}', time):
+        values['img_taken'] = f"{date[:4]}-{date[4:6]}-{date[6:]}T{time[:2]}:{time[2:4]}:{time[4:6]}"
+    return values
+
+
+def iptc_dataset(record, dataset, value):
+    if len(value) > 0x7FFF:
+        raise UserError("Os metadados ficaram grandes demais para um JPEG.")
+    return bytes((0x1C, record, dataset)) + len(value).to_bytes(2, 'big') + value
+
+
+def new_iptc(data, values):
+    """IPTC com os campos do formulário no lugar dos antigos, em UTF-8. O resto (cidade, crédito...)
+    fica, passado para UTF-8 se estava em outra codificação."""
+    records = iptc_records(data)
+    utf8 = any(key == (1, 90) and value == IPTC_UTF8 for key, value, _ in records)
+    managed = set(IPTC.values()) | {IPTC_DATE, IPTC_TIME}
+    out = [((1, 90), iptc_dataset(1, 90, IPTC_UTF8))]
+    for (record, dataset), value, raw in records:
+        if (record, dataset) == (1, 90) or (record == 2 and dataset in managed):
+            continue
+        if record == 2 and dataset not in IPTC_BINARY and not utf8:
+            raw = iptc_dataset(2, dataset, exif_text(value).encode('utf-8'))
+        out.append(((record, dataset), raw))
+    for field, dataset in IPTC.items():
+        items = values[field].split(',') if field == 'img_keywords' else [values[field]]
+        out += [((2, dataset), iptc_dataset(2, dataset, item.strip().encode('utf-8'))) for item in items if item.strip()]
+    if values['img_taken']:  # '2026-09-29T14:30:00' -> '20260929' e '143000'
+        date, time = values['img_taken'].replace('-', '').replace(':', '').split('T')
+        out += [((2, IPTC_DATE), iptc_dataset(2, IPTC_DATE, date.encode())),
+                ((2, IPTC_TIME), iptc_dataset(2, IPTC_TIME, time.encode()))]
+    return b''.join(raw for _, raw in sorted(out, key=lambda item: item[0]))  # em ordem de registro e dataset
+
+
+def new_photoshop(body, values):
+    """Bloco do Photoshop com o IPTC atualizado e o resto (miniatura, traçados...) igual. Sem IPTC,
+    ou se o bloco não puder ser lido inteiro, fica como está."""
+    resources = photoshop_resources(body)
+    iptc = next((r for r in resources or [] if r[0] == b'\x04\x04'), None)
+    if not iptc:
+        return body
+    iptc[2] = new_iptc(iptc[2], values)
+    for resource in resources:
+        if resource[0] == b'\x04\x25':  # resumo MD5 do IPTC: sem ele em dia, o IPTC pareceria editado por fora do XMP
+            resource[2] = hashlib.md5(iptc[2]).digest()
+    return b''.join(b'8BIM' + rid + name + len(d).to_bytes(4, 'big') + d + b'\x00' * (len(d) & 1) for rid, name, d in resources)
+
+
 def image_parts(data):
-    """(formato, EXIF, XMP em texto, textos do PNG, tamanho, se tem transparência) sem decodificar a imagem."""
+    """(formato, EXIF, XMP em texto, textos do PNG, IPTC, tamanho, se tem transparência) sem decodificar a imagem."""
     try:
         img = Image.open(io.BytesIO(data))
         with img:
@@ -671,12 +759,15 @@ def image_parts(data):
                 xmp = next((data[len(XMP_ID):] for marker, data in getattr(img, 'applist', [])
                             if marker == 'APP1' and data.startswith(XMP_ID)), '')
             texts = dict(img.text) if fmt == 'PNG' else {}
+            photoshop = next((photoshop_resources(data[len(PHOTOSHOP_ID):]) for marker, data in getattr(img, 'applist', [])
+                              if marker == 'APP13' and data.startswith(PHOTOSHOP_ID)), None)
+            iptc = next((r[2] for r in photoshop or [] if r[0] == b'\x04\x04'), b'')
             size, alpha = img.size, has_alpha(img)
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
     if fmt not in ('JPEG', 'PNG', 'WEBP'):
         raise UserError("Metadados de imagem: use JPG, PNG ou WebP.")
-    return fmt, exif, xmp.decode('utf-8', 'replace') if isinstance(xmp, bytes) else xmp, texts, size, alpha
+    return fmt, exif, xmp.decode('utf-8', 'replace') if isinstance(xmp, bytes) else xmp, texts, iptc, size, alpha
 
 
 MONTHS = {name: i % 12 + 1 for i, name in enumerate(
@@ -716,8 +807,8 @@ def text_date(text):
 
 
 def read_image_metadata(data):
-    fmt, exif, xmp, texts, _, _ = image_parts(data)
-    values = dict.fromkeys(IMAGE_FIELDS, '')
+    fmt, exif, xmp, texts, iptc, _, _ = image_parts(data)
+    values = dict.fromkeys(IMAGE_FIELDS, '') | iptc_values(iptc)  # o EXIF e o XMP, se tiverem o campo, valem mais
     for field, key in PNG_TEXT.items():
         values[field] = texts.get(key, '') or values[field]
     for field, tag in IMAGE_EXIF_TEXT.items():
@@ -736,7 +827,7 @@ def read_image_metadata(data):
 
 
 def new_image_metadata(exif, xmp, form):
-    """(EXIF, XMP, textos do PNG) novos a partir do formulário."""
+    """(EXIF, XMP, valores do formulário já normalizados) novos a partir do formulário."""
     if form.get('meta_strip'):  # fica só o que muda a aparência: a orientação (o perfil de cor fica no arquivo)
         kept = Image.Exif()
         if ORIENTATION in exif:
@@ -777,8 +868,7 @@ def new_image_metadata(exif, xmp, form):
         del exif[GPS_IFD]
     values['img_taken'] = taken_iso
     new_xmp = update_xmp(xmp, values, IMAGE_XMP_PROPERTIES, drop=is_gps if strip_gps else None) if xmp else None
-    texts = {key: values[field] for field, key in PNG_TEXT.items() if values[field]}
-    return exif, new_xmp, texts
+    return exif, new_xmp, values
 
 
 def jpeg_segment(marker, payload):
@@ -787,8 +877,8 @@ def jpeg_segment(marker, payload):
     return bytes((0xFF, marker)) + (len(payload) + 2).to_bytes(2, 'big') + payload
 
 
-def rewrite_jpeg(data, tiff, xmp, strip):
-    """Troca os segmentos de EXIF e XMP; os dados da imagem (a partir do SOS) ficam iguais."""
+def rewrite_jpeg(data, tiff, xmp, values, strip):
+    """Troca os segmentos de EXIF e XMP e atualiza o IPTC; os dados da imagem (a partir do SOS) ficam iguais."""
     head, others, pos = [], [], 2
     while True:
         if pos + 4 > len(data) or data[pos] != 0xFF:
@@ -805,6 +895,8 @@ def rewrite_jpeg(data, tiff, xmp, strip):
             continue  # EXIF e XMP antigos: saem, os novos entram abaixo
         if strip and (marker == 0xED or marker == 0xFE):  # IPTC (Photoshop) e comentário
             continue
+        if marker == 0xED and body.startswith(PHOTOSHOP_ID):
+            segment = jpeg_segment(0xED, PHOTOSHOP_ID + new_photoshop(body[len(PHOTOSHOP_ID):], values))
         (head if marker == 0xE0 and not others else others).append(segment)  # JFIF fica primeiro
     new = []
     if tiff:
@@ -818,8 +910,9 @@ def png_chunk(kind, payload):
     return len(payload).to_bytes(4, 'big') + kind + payload + zlib.crc32(kind + payload).to_bytes(4, 'big')
 
 
-def rewrite_png(data, tiff, xmp, texts, strip):
+def rewrite_png(data, tiff, xmp, values, strip):
     """Troca o eXIf e os textos de metadados; IDAT e o resto ficam iguais."""
+    texts = {key: values[field] for field, key in PNG_TEXT.items() if values.get(field)}
     managed = {key.encode('latin-1') for key in PNG_TEXT.values()} | {b'XML:com.adobe.xmp'}
     new = []
     if tiff:
@@ -872,14 +965,14 @@ def rewrite_webp(data, tiff, xmp, size, alpha):
 
 def edit_image_metadata(path, base, form):
     data = path.read_bytes()
-    fmt, exif, xmp, _, size, alpha = image_parts(data)
-    exif, new_xmp, texts = new_image_metadata(exif, xmp, form)
+    fmt, exif, xmp, _, _, size, alpha = image_parts(data)
+    exif, new_xmp, values = new_image_metadata(exif, xmp, form)
     tiff = exif.tobytes()[6:] if len(exif) else None  # sem o prefixo "Exif\0\0" do JPEG
     strip = bool(form.get('meta_strip'))
     if fmt == 'JPEG':
-        out = rewrite_jpeg(data, tiff, new_xmp, strip)
+        out = rewrite_jpeg(data, tiff, new_xmp, values, strip)
     elif fmt == 'PNG':
-        out = rewrite_png(data, tiff, new_xmp, texts, strip)
+        out = rewrite_png(data, tiff, new_xmp, values, strip)
     else:
         out = rewrite_webp(data, tiff, new_xmp, size, alpha)
     message = "Todos os metadados foram removidos (a orientação e o perfil de cor ficaram)." if strip else "Metadados atualizados."
