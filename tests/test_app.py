@@ -1,6 +1,6 @@
 import hashlib
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 import subprocess
 import sys
 import tempfile
@@ -930,7 +930,8 @@ def test_edit_metadata_keeps_xmp_in_sync_and_the_rest_of_it(client):
     assert "2026-09-29T14:30:00" in xmp
 
 
-@pytest.mark.parametrize("raw", ["D:20260102030405", "D:20260102030400Z", "D:20260102030405+05'30'"])
+@pytest.mark.parametrize("raw", ["D:20260102030405", "D:20260102030400Z", "D:20260102030405+05'30'",
+                                 "20260102030405", "2026-01-02T03:04:05", "Tue Jan 02 03:04:05 2026"])  # sem o D: etc.
 def test_pdf_date_saved_unchanged_stays_as_it_was(client, raw):
     doc = pymupdf.open()
     doc.new_page()
@@ -942,6 +943,21 @@ def test_pdf_date_saved_unchanged_stays_as_it_was(client, raw):
     r = edit(client, pdf, meta_title="Outro título", **{k: v for k, v in form.items() if k != "meta_title"})
     meta = pymupdf.open(stream=r.data, filetype="pdf").metadata
     assert meta["title"] == "Outro título" and meta["creationDate"] == raw  # sem ganhar nem trocar o fuso
+
+
+def test_pdf_metadata_only_in_xmp_is_shown_and_kept(client):
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.set_xml_metadata(XMP_ANTIGO.replace('pdfaid:part', 'xmp:CreateDate="2026-01-02T03:04:05Z" pdfaid:part'))
+    pdf = doc.tobytes()
+    form = {k: v for k, v in client.post("/metadata", data={"file": (io.BytesIO(pdf), "a.pdf")},
+                                         content_type="multipart/form-data").get_json().items() if k.startswith("meta_")}
+    assert form["meta_title"] == "Título antigo" and form["meta_producer"] == "Produtor antigo"
+    assert form["meta_created"] == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:%S")
+    r = edit(client, pdf, **form | {"meta_subject": "Contas"})
+    out = pymupdf.open(stream=r.data, filetype="pdf")
+    assert out.metadata["title"] == "Título antigo" and "Título antigo" in out.get_xml_metadata()
+    assert "2026-01-02T03:04:05Z" in out.get_xml_metadata()  # a data não mexida fica como estava
 
 
 def test_edit_metadata_does_not_create_xmp(client):
