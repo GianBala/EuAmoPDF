@@ -85,16 +85,16 @@ venv/bin/pip install -r requirements.txt
 venv/bin/python app.py
 ```
 
-No Windows, use `venv\Scripts\pip` e `venv\Scripts\python`. O navegador abre sozinho em `http://127.0.0.1:5000` (ou em outra porta, se a 5000 estiver ocupada). Para fechar o app, aperte `Ctrl+C` no terminal.
+No Windows, use `venv\Scripts\pip` e `venv\Scripts\python`. O navegador abre sozinho em `http://127.0.0.1:5000` (ou em outra porta, se a 5000 estiver ocupada). O app vive nesse terminal: para fechá-lo, feche o terminal ou aperte `Ctrl+C`.
 
 ## Executável (AppImage e .exe)
 
 Para usar sem instalar Python nem nada do `pip`, baixe o arquivo do seu sistema na página de [Releases](https://github.com/GianBala/EuAmoPDF/releases). Tudo já vem dentro dele: o Python, as bibliotecas, os idiomas do OCR (português e inglês) e o modelo do Remover fundo, que então funciona offline desde a primeira vez.
 
-- **Linux:** `chmod +x EuAmoPDF.AppImage && ./EuAmoPDF.AppImage`. Se ele reclamar do FUSE, rode com `--appimage-extract-and-run` ou instale o `libfuse2`.
+- **Linux:** `chmod +x EuAmoPDF.AppImage && ./EuAmoPDF.AppImage`. Com dois cliques no arquivo ele abre um terminal sozinho (usa o terminal padrão do sistema, ou o `gnome-terminal`, `konsole`, `xfce4-terminal` ou `xterm`). Se ele reclamar do FUSE, rode com `--appimage-extract-and-run` ou instale o `libfuse2`.
 - **Windows:** dê dois cliques em `EuAmoPDF.exe`. Como o arquivo não é assinado, o SmartScreen avisa: clique em **Mais informações** e depois em **Executar assim mesmo**. Ele leva alguns segundos para abrir, porque se descompacta na pasta temporária a cada vez.
 
-O navegador abre sozinho. Para encerrar o app, feche o terminal (ou a janela preta, no Windows) ou aperte `Ctrl+C` nele.
+O navegador abre sozinho. O app fica preso ao terminal (a janela preta, no Windows): fechá-lo encerra o processo, e `Ctrl+C` nele também.
 
 O que **não** vem dentro é o Microsoft Office ou o LibreOffice, usados para converter Word, PowerPoint e Excel para PDF (veja [Programas opcionais](#programas-opcionais)); as demais ferramentas não precisam de nada.
 
@@ -146,7 +146,7 @@ venv/bin/pip install -r requirements-dev.txt
 venv/bin/pytest
 ```
 
-Os testes geram os PDFs e as imagens na hora e cobrem todas as ferramentas, as mensagens de erro, a segurança (nomes de arquivo maliciosos, requisições de outros sites) e a limpeza dos arquivos temporários. Os testes do Office e do OCR são pulados quando o LibreOffice ou o Tesseract não estão instalados. O [GitHub Actions](.github/workflows/tests.yml) roda tudo no Linux, com LibreOffice e Tesseract, e no Windows, com o OCR e o modelo de remover fundo; roda também com a versão mais antiga de cada dependência que o `requirements.txt` aceita, no Python 3.10.
+Os testes geram os PDFs e as imagens na hora e cobrem todas as ferramentas, as mensagens de erro, a segurança (nomes de arquivo maliciosos, requisições de outros sites) e a limpeza dos arquivos temporários. Também provam que fechar o terminal encerra o app e que o `AppRun` do AppImage abre um terminal quando o arquivo é aberto sem nenhum. Os testes do Office e do OCR são pulados quando o LibreOffice ou o Tesseract não estão instalados. O [GitHub Actions](.github/workflows/tests.yml) roda tudo no Linux, com LibreOffice e Tesseract, e no Windows, com o OCR e o modelo de remover fundo; roda também com a versão mais antiga de cada dependência que o `requirements.txt` aceita, no Python 3.10.
 
 ## Licença
 

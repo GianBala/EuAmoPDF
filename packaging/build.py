@@ -71,7 +71,7 @@ def build_appimage(tessdata, model):
     shutil.rmtree(appdir, ignore_errors=True)
     pyinstaller(appdir / 'usr' / 'bin', '--onedir', tessdata, model)  # sem descompactar a cada abertura
     run = appdir / 'AppRun'
-    run.write_text('#!/bin/sh\nexec "$(dirname "$0")/usr/bin/EuAmoPDF/EuAmoPDF" "$@"\n')
+    shutil.copy(ROOT / 'packaging' / 'AppRun', run)
     run.chmod(0o755)
     (appdir / 'euamopdf.desktop').write_text(DESKTOP)
     shutil.copy(ICON, appdir / 'euamopdf.png')
