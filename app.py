@@ -457,10 +457,11 @@ XMP_PROPERTIES = {  # chave no PyMuPDF: (prefixo, propriedade XMP, forma do valo
 
 
 def parse_pdf_date(value):
-    """'D:20260929143000-03'00'' em datetime; None se vazia ou ilegível."""
-    m = re.match(r"D:(\d{4})(\d\d)?(\d\d)?(\d\d)?(\d\d)?(\d\d)?(Z|[+-]\d\d'?\d\d'?)?", value or '')
+    """'D:20260929143000-03'00'' em datetime; None se vazia ou ilegível. Aceita também o que alguns
+    programas gravam no lugar: sem o 'D:', ISO ou por extenso."""
+    m = re.match(r"(?:D:\s*|(?=\d{8}))(\d{4})(\d\d)?(\d\d)?(\d\d)?(\d\d)?(\d\d)?(Z|[+-]\d\d'?\d\d'?)?", value or '')
     if not m:
-        return None
+        return text_date(value or '')
     year, month, day, hour, minute, second, zone = m.groups()
     tz = None
     if zone == 'Z':
@@ -533,11 +534,13 @@ def update_xmp(xmp, values, properties=XMP_PROPERTIES, drop=None):
 
 
 def read_metadata(doc):
-    """Metadados atuais, com os nomes dos campos do formulário."""
+    """Metadados atuais, com os nomes dos campos do formulário. O que faltar no Info vem do XMP:
+    há programas que só gravam nele, como pede o PDF 2.0."""
     meta = doc.metadata or {}
-    values = {field: meta.get(key) or '' for key, field in META_FIELDS.items()}
+    xmp = xmp_values(doc.get_xml_metadata(), XMP_PROPERTIES)
+    values = {field: meta.get(key) or xmp.get(key, '') for key, field in META_FIELDS.items()}
     for key, field in META_DATES.items():
-        moment = parse_pdf_date(meta.get(key))
+        moment = parse_pdf_date(meta.get(key)) or text_date(xmp.get(key, ''))
         if moment and moment.tzinfo:
             moment = moment.astimezone()  # mostra no fuso deste computador
         values[field] = moment.strftime('%Y-%m-%dT%H:%M:%S') if moment else ''
@@ -561,7 +564,9 @@ def edit_metadata(files, form, tmp):
         if moment and moment == form_date(shown[field]):
             # Não foi mexida: fica como estava, com o fuso que tinha ou sem nenhum (a interface
             # mostra no fuso deste computador, e regravar assim trocaria ou inventaria o fuso)
-            dates[key], moments[key] = doc.metadata[key], parse_pdf_date(doc.metadata[key])
+            dates[key] = doc.metadata[key]
+            if parse_pdf_date(dates[key]):  # sem ela no Info, a data veio do XMP, que também fica como está
+                moments[key] = parse_pdf_date(dates[key])
         else:
             dates[key], moments[key] = pdf_date(moment) if moment else '', moment
     doc.set_metadata(meta | dates)
@@ -699,6 +704,15 @@ def browser_date(text):
         return datetime(int(year[0]), month, int(day[0]), hour, int(time[2]), int(time[3] or 0)).isoformat()
     except (TypeError, ValueError):  # sem dia ou mês, ou uma data que não existe
         return ''
+
+
+def text_date(text):
+    """Data escrita fora do padrão do PDF: ISO, como no XMP (o fuso, se houver, fica), ou por extenso."""
+    try:
+        return datetime.fromisoformat(text.strip().replace('Z', '+00:00'))
+    except ValueError:
+        iso = browser_date(text)
+        return datetime.fromisoformat(iso) if iso else None
 
 
 def read_image_metadata(data):
