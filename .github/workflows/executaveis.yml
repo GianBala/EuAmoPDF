@@ -1,0 +1,51 @@
+name: Executáveis
+
+# Ao publicar uma tag v* (git tag v1.0 && git push --tags), o AppImage e o .exe vão para a página
+# de Releases. Em Actions > Executáveis > Run workflow, saem só como artefato do próprio run.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  empacotar:
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.04 e não latest: o AppImage roda em sistemas com glibc igual ou mais nova que a de quem o gerou
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-build.txt
+      - name: Guardar o modelo de remover fundo entre execuções
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'Windows' && '~\AppData\Local\euamopdf' || '~/.cache/euamopdf' }}  # app.bg_model_path()
+          key: modelo-isnet-60920e99c454
+      - run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EuAmoPDF-${{ runner.os }}
+          path: dist/EuAmoPDF*
+          compression-level: 0  # já vêm comprimidos
+
+  publicar:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: empacotar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

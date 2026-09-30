@@ -62,13 +62,21 @@ def program_file(*parts):
     return None
 
 
+def bundled(name):
+    """Arquivo embutido no executável gerado pelo PyInstaller (packaging/build.py); None fora dele."""
+    if hasattr(sys, '_MEIPASS') and (path := Path(sys._MEIPASS, name)).exists():
+        return path
+
+
 def find_soffice():
     return shutil.which('soffice') or shutil.which('libreoffice') or \
         program_file('LibreOffice', 'program', 'soffice.exe')
 
 
 def find_tessdata():
-    """Pasta de idiomas do Tesseract, ou None se ele não estiver instalado."""
+    """Pasta de idiomas do Tesseract (a embutida, se houver), ou None se ele não estiver instalado."""
+    if path := bundled('tessdata'):
+        return str(path)
     try:
         return pymupdf.get_tessdata()
     except Exception:
@@ -1229,7 +1237,9 @@ _bg_lock = threading.Lock()
 
 
 def bg_model_path():
-    """Na pasta de cache do sistema: %LOCALAPPDATA% no Windows, ~/.cache no Linux."""
+    """O embutido no executável, se houver; senão na pasta de cache do sistema: %LOCALAPPDATA% no Windows, ~/.cache no Linux."""
+    if path := bundled('isnet-general-use.onnx'):
+        return path
     base = os.environ.get('LOCALAPPDATA') or os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
     return Path(base) / 'euamopdf' / 'isnet-general-use.onnx'
 
@@ -1716,6 +1726,13 @@ def free_port(preferred=5000):
         return s.getsockname()[1]
 
 if __name__ == '__main__':
+    if hasattr(sys, '_MEIPASS'):
+        # O PyInstaller aponta o LD_LIBRARY_PATH para as bibliotecas embutidas; o navegador e o
+        # LibreOffice que o app abre precisam das do sistema. As nossas já foram carregadas.
+        if 'LD_LIBRARY_PATH_ORIG' in os.environ:
+            os.environ['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH_ORIG']
+        else:
+            os.environ.pop('LD_LIBRARY_PATH', None)
     port = free_port()
     # O Timer aguarda 1 segundo para garantir que o servidor Flask já subiu
     Timer(1, webbrowser.open_new, [f"http://127.0.0.1:{port}/"]).start()

@@ -11,7 +11,7 @@ Juntar, dividir, comprimir, converter, OCR, senha e remover o fundo de imagens, 
 ![Windows e Linux](https://img.shields.io/badge/Windows%20%7C%20Linux-2b2f3a)
 ![Licença AGPL-3.0](https://img.shields.io/badge/licen%C3%A7a-AGPL--3.0-blue)
 
-[O que faz](#o-que-faz) · [Começar](#começar) · [Programas opcionais](#programas-opcionais) · [Como funciona](#como-funciona) · [Testes](#testes)
+[O que faz](#o-que-faz) · [Começar](#começar) · [Executável](#executável-appimage-e-exe) · [Programas opcionais](#programas-opcionais) · [Como funciona](#como-funciona) · [Testes](#testes)
 
 </div>
 
@@ -87,6 +87,26 @@ venv/bin/python app.py
 
 No Windows, use `venv\Scripts\pip` e `venv\Scripts\python`. O navegador abre sozinho em `http://127.0.0.1:5000` (ou em outra porta, se a 5000 estiver ocupada). Para fechar o app, aperte `Ctrl+C` no terminal.
 
+## Executável (AppImage e .exe)
+
+Para usar sem instalar Python nem nada do `pip`, baixe o arquivo do seu sistema na página de [Releases](https://github.com/GianBala/EuAmoPDF/releases). Tudo já vem dentro dele: o Python, as bibliotecas, os idiomas do OCR (português e inglês) e o modelo do Remover fundo, que então funciona offline desde a primeira vez.
+
+- **Linux:** `chmod +x EuAmoPDF.AppImage && ./EuAmoPDF.AppImage`. Se ele reclamar do FUSE, rode com `--appimage-extract-and-run` ou instale o `libfuse2`.
+- **Windows:** dê dois cliques em `EuAmoPDF.exe`. Como o arquivo não é assinado, o SmartScreen avisa: clique em **Mais informações** e depois em **Executar assim mesmo**. Ele leva alguns segundos para abrir, porque se descompacta na pasta temporária a cada vez.
+
+O navegador abre sozinho. Para encerrar o app, feche o terminal (ou a janela preta, no Windows) ou aperte `Ctrl+C` nele.
+
+O que **não** vem dentro é o Microsoft Office ou o LibreOffice, usados para converter Word, PowerPoint e Excel para PDF (veja [Programas opcionais](#programas-opcionais)); as demais ferramentas não precisam de nada.
+
+Para gerar os arquivos, o PyInstaller precisa rodar em cada sistema: o AppImage se constrói no Linux e o `.exe` no Windows.
+
+```bash
+pip install -r requirements-build.txt
+python packaging/build.py    # cria dist/EuAmoPDF.AppImage (Linux) ou dist/EuAmoPDF.exe (Windows)
+```
+
+No fim, o script abre o arquivo pronto e converte alguns documentos de teste, para o build falhar se faltar algo dentro dele. O workflow [Executáveis](.github/workflows/executaveis.yml) faz isso nos dois sistemas: uma tag `v*` publica os dois arquivos em Releases, e **Actions → Executáveis → Run workflow** os deixa como artefatos do run.
+
 ## Programas opcionais
 
 A maior parte das ferramentas funciona só com o que o `pip` instala. Duas precisam de um programa a mais, e a ferramenta avisa quando ele estiver faltando:
@@ -98,7 +118,7 @@ A maior parte das ferramentas funciona só com o que o `pip` instala. Duas preci
 
 No Windows, o LibreOffice e o Tesseract são encontrados na pasta padrão de instalação (`Program Files`), mesmo fora do `PATH`.
 
-O **Remover fundo** não precisa de nada a instalar: na primeira vez, o app baixa sozinho o modelo de IA ([ISNet](https://github.com/xuebinqin/DIS), 170 MB) para `~/.cache/euamopdf` no Linux ou `%LOCALAPPDATA%\euamopdf` no Windows, e confere o arquivo pelo SHA-256. Depois disso funciona sem internet, e as imagens nunca saem do computador. O modelo usa cerca de 800 MB de memória enquanto trabalha e leva por volta de 1 segundo por foto.
+O **Remover fundo** não precisa de nada a instalar: na primeira vez, o app baixa sozinho o modelo de IA ([ISNet](https://github.com/xuebinqin/DIS), 170 MB) para `~/.cache/euamopdf` no Linux ou `%LOCALAPPDATA%\euamopdf` no Windows, e confere o arquivo pelo SHA-256. Depois disso funciona sem internet, e as imagens nunca saem do computador. No [executável](#executável-appimage-e-exe) o modelo já vem dentro. O modelo usa cerca de 800 MB de memória enquanto trabalha e leva por volta de 1 segundo por foto.
 
 ## Como funciona
 
