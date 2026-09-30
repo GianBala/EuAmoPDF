@@ -634,7 +634,10 @@ def xmp_values(xmp, properties):
                 break
             prop = description.find(tag)
             if prop is not None:
-                items = [li.text or '' for li in prop.iter(f'{{{rdf}}}li')]
+                items = list(prop.iter(f'{{{rdf}}}li'))
+                if properties[field][2] == 'Alt':  # o mesmo texto em vários idiomas: vale o padrão
+                    items = [li for li in items if li.get('{http://www.w3.org/XML/1998/namespace}lang') == 'x-default'] or items[:1]
+                items = [li.text or '' for li in items]
                 found[field] = ', '.join(items) if items else (prop.text or '').strip()
                 break
     return found
