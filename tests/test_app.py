@@ -960,7 +960,8 @@ def test_remove_all_metadata(client):
 XMP_FOTO = ('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
             '<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" '
             'exif:GPSLatitude="23,33.0S" exif:GPSLongitude="46,38.0W"><dc:title><rdf:Alt>'
-            '<rdf:li xml:lang="x-default">Foto antiga</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>')
+            '<rdf:li xml:lang="en">Old photo</rdf:li><rdf:li xml:lang="x-default">Foto antiga</rdf:li></rdf:Alt></dc:title>'
+            '</rdf:Description></rdf:RDF></x:xmpmeta>')
 
 
 def phone_photo(fmt="JPEG"):
