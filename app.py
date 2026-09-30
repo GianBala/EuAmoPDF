@@ -671,6 +671,33 @@ def image_parts(data):
     return fmt, exif, xmp.decode('utf-8', 'replace') if isinstance(xmp, bytes) else xmp, texts, size, alpha
 
 
+MONTHS = {name: i % 12 + 1 for i, name in enumerate(
+    'jan fev mar abr mai jun jul ago set out nov dez jan feb mar apr may jun jul aug sep oct nov dec'.split())}
+
+
+def browser_date(text):
+    """Data para o campo do navegador ('2026-09-29T14:30:00'), vinda do EXIF ou ISO ('2026:09:29 14:30:00')
+    ou de texto livre, como o 'Creation Time' do PNG: RFC 1123 ('Tue, 29 Sep 2026 14:30:00 GMT'),
+    asctime ('Tue Sep 29 14:30:00 2026') ou o idioma do sistema, como grava o gnome-screenshot
+    ('ter 29 set 2026 14:30:00', 'Tue 29 Sep 2026 02:30:00 PM'). '' se ilegível."""
+    m = re.match(r'(\d{4})[:-](\d\d)[:-](\d\d)[T ](\d\d):(\d\d)(?::(\d\d))?', text)
+    if m:
+        return f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}:{m[6] or '00'}"
+    # por extenso: tirando a hora e o ano, sobram o dia e o nome do mês, em qualquer ordem
+    time = re.search(r'(\d{1,2}):(\d\d)(?::(\d\d))?(?:\s*([AaPp])\.?\s?[Mm]\b)?', text)
+    year = re.search(r'\b\d{4}\b', text)
+    if not (time and year):
+        return ''
+    rest = text.replace(time[0], ' ').replace(year[0], ' ', 1)
+    day = re.search(r'\b\d{1,2}\b', rest)
+    month = next((MONTHS[w[:3].lower()] for w in re.findall(r'[^\W\d_]{3,}', rest) if w[:3].lower() in MONTHS), None)
+    hour = int(time[1]) % 12 + (12 if time[4] in 'Pp' else 0) if time[4] else int(time[1])
+    try:
+        return datetime(int(year[0]), month, int(day[0]), hour, int(time[2]), int(time[3] or 0)).isoformat()
+    except (TypeError, ValueError):  # sem dia ou mês, ou uma data que não existe
+        return ''
+
+
 def read_image_metadata(data):
     fmt, exif, xmp, texts, _, _ = image_parts(data)
     values = dict.fromkeys(IMAGE_FIELDS, '')
@@ -685,9 +712,7 @@ def read_image_metadata(data):
         values['img_taken'] = str(taken)
     if xmp:  # o XMP é UTF-8 de verdade: quando tem o campo, vale ele
         values.update({k: v for k, v in xmp_values(xmp, IMAGE_XMP_PROPERTIES).items() if v})
-    # data para o campo do navegador: '2026:09:29 14:30:00' ou ISO -> '2026-09-29T14:30:00'
-    m = re.match(r'(\d{4})[:-](\d\d)[:-](\d\d)[T ](\d\d):(\d\d)(?::(\d\d))?', values['img_taken'])
-    values['img_taken'] = f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}:{m[6] or '00'}" if m else ''
+    values['img_taken'] = browser_date(values['img_taken'])
     camera = ' '.join(filter(None, (exif_text(exif.get(MAKE)), exif_text(exif.get(MODEL)))))
     gps = exif.get_ifd(GPS_IFD)
     return values | {'tipo': 'imagem', 'camera': camera, 'localizacao': gps_text(gps) if gps else ''}

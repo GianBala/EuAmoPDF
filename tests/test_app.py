@@ -1020,6 +1020,21 @@ def test_image_date_taken_goes_to_exif_and_leaves_no_empty_block(client, fmt, ex
     assert 0x8769 not in opened(r.data).getexif()
 
 
+@pytest.mark.parametrize("creation", ["ter 29 set 2026 14:21:03", "Tue 29 Sep 2026 02:21:03 PM BRT",
+                                      "Tue, 29 Sep 2026 14:21:03 GMT", "Tue Sep 29 14:21:03 2026"])
+def test_png_creation_time_in_words_is_read_and_kept(client, creation):
+    from PIL import PngImagePlugin
+    info = PngImagePlugin.PngInfo()  # como o gnome-screenshot grava (idioma do sistema) e como a norma do PNG pede
+    info.add_text("Software", "gnome-screenshot")
+    info.add_text("Creation Time", creation)
+    buf = io.BytesIO()
+    opened(make_photo((50, 40), fmt="PNG")).save(buf, "PNG", pnginfo=info)
+    form = {k: v for k, v in image_metadata(client, buf.getvalue(), "f.png").items() if k.startswith("img_")}
+    assert form["img_taken"] == "2026-09-29T14:21:03" and form["img_software"] == "gnome-screenshot"
+    r = post(client, "edit-metadata", ("f.png", buf.getvalue()), **form | {"img_title": "Tela"})
+    assert image_metadata(client, r.data, "f.png")["img_taken"] == "2026-09-29T14:21:03"  # editar não apaga a data
+
+
 @pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
 def test_image_metadata_saved_unchanged_adds_no_exif_block(client, fmt, ext):
     src = phone_photo(fmt)  # EXIF com câmera e GPS, sem o bloco Exif (0x8769)
