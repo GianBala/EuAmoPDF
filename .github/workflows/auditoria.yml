@@ -1,0 +1,25 @@
+name: Auditoria
+
+# Vulnerabilidades conhecidas nas dependências. Roda também toda semana: uma falha publicada depois do
+# último push aparece sem esperar o próximo, e é a hora de gerar um release novo dos executáveis,
+# que congelam as bibliotecas do dia em que foram gerados.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      - run: pip-audit -r requirements.txt

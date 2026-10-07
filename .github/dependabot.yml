@@ -1,0 +1,9 @@
+# Mantém em dia as actions dos workflows, que ficam fixadas por SHA. As bibliotecas Python não entram:
+# o requirements.txt usa versões mínimas (>=), testadas de propósito no job de versões mínimas, e o
+# Dependabot abriria PRs subindo-as. As vulnerabilidades delas ficam com o workflow Auditoria.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
