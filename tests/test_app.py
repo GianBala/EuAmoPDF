@@ -1261,6 +1261,48 @@ def test_pdf_to_word_puts_a_table_beside_text_where_it_was(tmp_path):
     assert [p.text for p in docx.Document(path).paragraphs if p.text] == ["ESCOLINHA DE AIRBADMINTON", "ARENA CABO BRANCO"]
 
 
+def test_pdf_to_word_column_sections_work_in_any_editor(tmp_path):
+    """O pdf2docx grava duas assinaturas lado a lado como duas seções de 2 colunas, a segunda começando
+    na próxima coluna: o LibreOffice não conhece esse tipo de quebra e começava uma página nova. E o
+    parágrafo vazio de uma quebra de seção, numa página já cheia, abria uma página em branco."""
+    docx = pytest.importorskip("docx")
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls, qn
+
+    def section_break(kind, columns=1):
+        paragraph = document.add_paragraph()
+        paragraph._p.get_or_add_pPr().append(parse_xml(
+            f'<w:sectPr {nsdecls("w")}><w:type w:val="{kind}"/><w:cols w:num="{columns}" w:space="720"/></w:sectPr>'))
+
+    document = docx.Document()
+    document.add_paragraph("Termo")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "Uniforme"
+    document.add_paragraph()  # o separador que o pdf2docx põe depois de toda tabela
+    section_break("nextPage")
+    document.add_paragraph("Assinatura do aluno")
+    section_break("continuous", 2)
+    document.add_paragraph("Assinatura do responsável")
+    section_break("nextColumn", 2)
+    document.add_paragraph("Conta")
+    path = tmp_path / "termo.docx"
+    document.save(path)
+    euamopdf.fix_docx(path)
+    body = docx.Document(path).element.body
+    kinds = [sect.find(qn("w:type")).get(qn("w:val")) for sect in body.iter(qn("w:sectPr")) if sect.find(qn("w:type")) is not None]
+    assert "nextColumn" not in kinds and kinds.count("continuous") == 1
+    texts = [el for el in body if el.tag == qn("w:p")]
+    signature = next(i for i, p in enumerate(texts) if "aluno" in "".join(t.text for t in p.iter(qn("w:t"))))
+    after = texts[signature + 1]
+    assert after.find(f".//{qn('w:br')}").get(qn("w:type")) == "column"  # a segunda assinatura vai para a outra coluna
+    for paragraph in texts:
+        if paragraph.find(f".//{qn('w:sectPr')}") is not None and not "".join(t.text for t in paragraph.iter(qn("w:t"))):
+            assert paragraph.find(f"{qn('w:pPr')}/{qn('w:spacing')}").get(qn("w:lineRule")) == "exact"
+            assert paragraph.find(f"{qn('w:pPr')}/{qn('w:rPr')}/{qn('w:sz')}").get(qn("w:val")) == "2"  # fonte de 1 pt
+    # Entre a tabela e a quebra de seção não sobra o separador: a própria quebra fecha a tabela
+    table = body.find(qn("w:tbl"))
+    assert table.getnext().find(f".//{qn('w:sectPr')}") is not None
+
+
 def test_pdf_to_word_keeps_the_table_column_widths(client):
     """O pdf2docx grava a largura certa em cada célula, mas a grade da tabela com as colunas iguais, e
     os editores desenham pela grade: a coluna estreitada quebrava o texto, e a altura exata o cortava."""
