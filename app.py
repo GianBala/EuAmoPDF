@@ -98,7 +98,15 @@ def msoffice_to_pdf(src, out, app_name):
         if app_name == "Word.Application":
             office.DisplayAlerts = 0  # wdAlertsNone
             doc = office.Documents.Open(str(src), ReadOnly=True, ConfirmConversions=False, AddToRecentFiles=False)
-            try: doc.SaveAs(str(out), FileFormat=17)  # wdFormatPDF
+            try:
+                # A versão final, sem alterações controladas nem comentários, como faz o iLovePDF.
+                # Só no documento aberto: ele é só leitura e não é salvo
+                try:
+                    doc.Revisions.AcceptAll()
+                    doc.DeleteAllComments()
+                except Exception:
+                    app.logger.info("Documento protegido contra edição: vai como está", exc_info=True)
+                doc.SaveAs(str(out), FileFormat=17)  # wdFormatPDF
             finally: doc.Close(False)
         elif app_name == "Excel.Application":
             office.DisplayAlerts = False
@@ -113,6 +121,72 @@ def msoffice_to_pdf(src, out, app_name):
         if office is not None:
             office.Quit()
         pythoncom.CoUninitialize()
+
+
+WORD_PARTS = re.compile(r'word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml')
+
+
+def accept_changes(src, tmp):
+    """Cópia do .docx com as alterações controladas aceitas, ou o próprio src se não houver nenhuma.
+    O LibreOffice imprimia o texto excluído riscado ao lado do inserido, com uma barra na margem; o
+    iLovePDF, que converte pelo Word, mostra só a versão final."""
+    from lxml import etree  # vem com o python-docx
+    w = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+
+    def unwrap(element):
+        parent = element.getparent()
+        for i, child in enumerate(list(element)):
+            parent.insert(parent.index(element) + i, child)
+        parent.remove(element)
+
+    parts = {}
+    if not zipfile.is_zipfile(src):
+        return src  # corrompido: o LibreOffice diz que não conseguiu converter
+    with zipfile.ZipFile(src) as z:
+        for name in z.namelist():
+            data = z.read(name)
+            if not WORD_PARTS.fullmatch(name) or not re.search(rb'<w:(del|ins|moveFrom|moveTo)\b|PrChange\b', data):
+                continue
+            try:
+                root = etree.fromstring(data)
+            except etree.XMLSyntaxError:
+                return src
+            for mark in list(root.iter(f'{w}del', f'{w}moveFrom')):
+                if mark.getparent() is None:
+                    continue  # já saiu junto com o que a continha
+                holder = mark.getparent()
+                if holder.tag == f'{w}trPr':  # linha de tabela excluída
+                    row = holder.getparent()
+                    row.getparent().remove(row)
+                elif holder.tag == f'{w}rPr' and holder.getparent().tag == f'{w}pPr':
+                    # marca de parágrafo excluída: o que sobrou do parágrafo se junta ao seguinte
+                    paragraph = holder.getparent().getparent()
+                    holder.remove(mark)
+                    following = paragraph.getnext()
+                    if following is not None and following.tag == f'{w}p':
+                        content = [child for child in paragraph if child.tag != f'{w}pPr']
+                        start = 1 if following.find(f'{w}pPr') is not None else 0
+                        for i, child in enumerate(content):
+                            following.insert(start + i, child)
+                        paragraph.getparent().remove(paragraph)
+                else:
+                    holder.remove(mark)
+            for mark in list(root.iter(f'{w}ins', f'{w}moveTo')):
+                if mark.getparent().tag in (f'{w}rPr', f'{w}trPr'):
+                    mark.getparent().remove(mark)  # só a marca de inserido
+                else:
+                    unwrap(mark)
+            for change in list(root.iter('{*}*')):
+                if change.tag.endswith('PrChange') or change.tag.split('}')[-1].startswith(('moveFromRange', 'moveToRange')):
+                    change.getparent().remove(change)  # formatação antiga: fica a nova
+            parts[name] = etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
+        if not parts:
+            return src
+        out = tmp / 'final.docx'
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as final:
+            for item in z.infolist():
+                final.writestr(item, parts.get(item.filename) or z.read(item))
+    return out
 
 
 def libreoffice_to_pdf(src, out_dir):
@@ -144,6 +218,8 @@ def office_to_pdf(src, tmp, app_name):
             app.logger.info("Microsoft Office indisponível; tentando o LibreOffice", exc_info=True)
     out_dir = tmp / 'libreoffice'
     out_dir.mkdir()
+    if src.suffix == '.docx':  # .doc, .odt e .rtf com alterações saem com a marcação (decisão D2)
+        src = accept_changes(src, tmp)
     return libreoffice_to_pdf(src, out_dir)
 
 
