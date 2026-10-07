@@ -429,6 +429,26 @@ def test_compress_image_rejects_other_files(client, name, content):
     assert compress_image(client, (name, content)).status_code == 400
 
 
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")  # o app o silencia; o pytest reativa
+def test_200_megapixel_photos_are_accepted(client):
+    """O Pillow recusa por padrão imagens acima de ~179 MP, e a foto de um celular de 200 MP
+    (16320 x 12240) era dada como "não é uma imagem válida" em todas as ferramentas de imagem."""
+    buf = io.BytesIO()
+    Image.new("L", (16320, 12240), 128).save(buf, "JPEG", quality=50)
+    photo = buf.getvalue()
+    r = compress_image(client, ("foto.jpg", photo), max_size="1920")
+    assert r.status_code == 200 and max(opened(r.data).size) == 1920
+    r = client.post("/metadata", data={"file": (io.BytesIO(photo), "foto.jpg")}, content_type="multipart/form-data")
+    assert r.status_code == 200
+
+
+def test_image_above_the_limit_gets_its_own_message(client, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)  # o limite de verdade é de 300 MP
+    for action in ("compress-image", "jpg-to-pdf", "edit-metadata"):
+        r = post(client, action, ("foto.png", make_image()))
+        assert r.status_code == 400 and "grande demais" in r.get_data(as_text=True), action
+
+
 def estimate(client, action, *files, **form):
     r = client.post("/estimate", data={"action": action, "file": [(io.BytesIO(c), n) for n, c in files], **form},
                     content_type="multipart/form-data")

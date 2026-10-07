@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import warnings
 import webbrowser # Biblioteca para abrir o navegador
 import xml.etree.ElementTree as ET
 import zipfile
@@ -42,6 +43,14 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
 
 class UserError(Exception):
     """Erro causado pela entrada do usuário; a mensagem é mostrada como está."""
+
+
+# O Pillow recusa imagens acima de ~179 MP (o dobro deste valor), contra arquivos pequenos que
+# explodem ao abrir, e as fotos de 200 MP de celular passavam disso. Erro agora só acima de 300 MP;
+# a 200 MP, o Remover fundo usa ~1 GB de memória só para a imagem em RGBA.
+Image.MAX_IMAGE_PIXELS = 150_000_000
+warnings.filterwarnings('ignore', category=Image.DecompressionBombWarning)  # entre 150 e 300 MP: é o esperado
+TOO_BIG = "A imagem é grande demais: o limite é de 300 megapixels."
 
 
 @app.before_request
@@ -355,6 +364,8 @@ def open_image(path, reduce_to=None):
                 original.draft(original.mode, (reduce_to * 2, reduce_to * 2))
             img = ImageOps.exif_transpose(original)
             img.load()
+    except Image.DecompressionBombError:
+        raise UserError(TOO_BIG)
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
     return img, fmt
@@ -382,6 +393,8 @@ def image_pages(path):
     try:
         with Image.open(path) as img:  # só o cabeçalho: o MuPDF abriria até HTML com nome de imagem
             fmt = img.format
+    except Image.DecompressionBombError:
+        raise UserError(TOO_BIG)
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
     try:
@@ -1077,6 +1090,8 @@ def image_parts(data):
                               if marker == 'APP13' and data.startswith(PHOTOSHOP_ID)), None)
             iptc = next((r[2] for r in photoshop or [] if r[0] == b'\x04\x04'), b'')
             size, alpha = img.size, has_alpha(img)
+    except Image.DecompressionBombError:
+        raise UserError(TOO_BIG)
     except Exception:
         raise UserError("O arquivo não é uma imagem válida.")
     if fmt not in ('JPEG', 'PNG', 'WEBP'):
