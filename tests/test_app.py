@@ -1843,6 +1843,17 @@ def test_rejects_requests_from_other_sites(client, headers, base_url):
     assert r.status_code == 403
 
 
+def test_responses_carry_security_headers(client):
+    """Segunda camada para o dia em que a checagem de origem mudar: nada de outro site roda na página,
+    ninguém a põe num iframe, e o texto de um erro (que pode ter o nome do arquivo) não vira HTML."""
+    page = client.get("/")
+    assert page.headers["X-Content-Type-Options"] == "nosniff"
+    assert "frame-ancestors 'none'" in page.headers["Content-Security-Policy"]
+    assert "default-src 'self'" in page.headers["Content-Security-Policy"]
+    error = post(client, "split-pdf", ("<b>x</b>.jpg", make_image()))
+    assert error.status_code == 400 and error.mimetype == "text/plain"
+
+
 def test_accepts_requests_from_the_app_itself(client):
     r = post(client, "merge-pdf", ("a.pdf", make_pdf()), headers={"Origin": "http://127.0.0.1:5000"})
     assert r.status_code == 200
