@@ -372,14 +372,38 @@ def load_image(path):
     return buf.getvalue(), img.size
 
 
+MUPDF_IMAGES = {'JPEG': 'jpg', 'PNG': 'png', 'TIFF': 'tif', 'GIF': 'gif', 'BMP': 'bmp'}
+
+
+def image_pages(path):
+    """A imagem como PDF, uma página por quadro (os TIFFs de scanner têm vários). O MuPDF põe o JPEG
+    como está, sem recomprimir e com o perfil de cor, segue a orientação da foto e lê PNG de 16 bits;
+    o resto (WebP, o MPO de alguns celulares) vai pelo Pillow."""
+    try:
+        with Image.open(path) as img:  # só o cabeçalho: o MuPDF abriria até HTML com nome de imagem
+            fmt = img.format
+    except Exception:
+        raise UserError("O arquivo não é uma imagem válida.")
+    try:
+        # Da memória: no Windows, um arquivo que fica aberto impede apagar a pasta temporária
+        return pymupdf.open('pdf', pymupdf.open(stream=path.read_bytes(), filetype=MUPDF_IMAGES[fmt]).convert_to_pdf())
+    except Exception:
+        data, (w, h) = load_image(path)
+        doc = pymupdf.open()
+        doc.new_page(width=w, height=h).insert_image(pymupdf.Rect(0, 0, w, h), stream=data)
+        return doc
+
+
 def images_to_pdf(files, form, tmp):
     out = pymupdf.open()
     for path, _ in files:
-        data, (w, h) = load_image(path)
-        # Página A4 em pé ou deitada, conforme a imagem, com a imagem inteira centralizada
-        size = (A4.width, A4.height) if h >= w else (A4.height, A4.width)
-        page = out.new_page(width=size[0], height=size[1])
-        page.insert_image(page.rect, stream=data)
+        images = image_pages(path)
+        for image in images:
+            # Página A4 em pé ou deitada, conforme a imagem, com a imagem inteira centralizada
+            w, h = image.rect.width, image.rect.height
+            size = (A4.width, A4.height) if h >= w else (A4.height, A4.width)
+            page = out.new_page(width=size[0], height=size[1])
+            page.show_pdf_page(page.rect, images, image.number)
     name = f"{files[0][1]}.pdf" if len(files) == 1 else "Imagens.pdf"
     return pdf_bytes(out), name
 
