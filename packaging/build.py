@@ -101,8 +101,13 @@ def build_appimage(tessdata, model):
     out = DIST / 'EuAmoPDF.AppImage'
     # EXTRACT_AND_RUN: roda a ferramenta (que também é um AppImage) sem precisar do FUSE; sem o
     # --runtime-file, ela baixaria a versão do dia do runtime
-    subprocess.run([tool, '--no-appstream', '--runtime-file', runtime, appdir, out], check=True,
+    # Grava ao lado e troca o nome no fim: o Linux não deixa regravar um AppImage aberto ("Text file busy"), e o
+    # build falhava só nesta última etapa, depois do teste de fumaça, deixando em dist/ o arquivo antigo
+    partial = out.with_name(out.name + '.part')
+    partial.unlink(missing_ok=True)
+    subprocess.run([tool, '--no-appstream', '--runtime-file', runtime, appdir, partial], check=True,
                    env=os.environ | {'ARCH': 'x86_64', 'APPIMAGE_EXTRACT_AND_RUN': '1'})
+    partial.replace(out)
     return out
 
 
