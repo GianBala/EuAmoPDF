@@ -689,12 +689,52 @@ def pdf_to_excel(files, form, tmp):
     return buf.getvalue(), f"{base}.xlsx", *found
 
 
+def font_families(doc):
+    """Família de cada fonte do PDF, pelo nome com que os trechos de texto a citam: a gravada no arquivo
+    da fonte embutida (o "Microsoft Print to PDF" chama todas de CIDFont+F1...) ou a do próprio nome."""
+    families = {}
+    for page in doc:
+        for xref, _, _, basefont, *_ in page.get_fonts(full=True):
+            name = basefont.split('+', 1)[1] if re.match(r'[A-Z]{6}\+', basefont) else basefont
+            if name in families:
+                continue
+            buffer = doc.extract_font(xref)[3]
+            try:
+                family = re.sub(FONT_STYLE, '', pymupdf.Font(fontbuffer=buffer).name) if buffer else ''
+            except Exception:  # fonte embutida que o MuPDF não lê
+                family = ''
+            families[name] = family or re.split(r'[-,]', name)[0]
+    return families
+
+
+def slide_lines(page):
+    """Linhas de texto visível e na horizontal: [(retângulo, trechos)]. Texto girado fica na imagem, e o
+    invisível (o do OCR, por cima de uma página escaneada) não vira texto visível."""
+    hidden = [pymupdf.Rect(span['bbox']) for span in page.get_texttrace() if span['type'] == 3 or not span['opacity']]
+    lines = []
+    for block in page.get_text('dict')['blocks']:
+        for line in block.get('lines', []):
+            if tuple(line['dir']) != (1, 0):
+                continue
+            spans = [span for span in line['spans'] if span['text'].strip() and not any(
+                pymupdf.Point((span['bbox'][0] + span['bbox'][2]) / 2, (span['bbox'][1] + span['bbox'][3]) / 2) in h
+                for h in hidden)]
+            if spans:
+                lines.append((pymupdf.Rect(line['bbox']), spans))
+    return lines
+
+
 def pdf_to_ppt(files, form, tmp):
-    """Cada página vira um slide com a imagem da página (o texto não fica editável)."""
+    """Cada página vira um slide: o texto em caixas de texto editáveis, por cima de uma imagem do resto
+    da página (desenhos, fotos, assinaturas). Páginas giradas ou escaneadas e texto girado ficam na imagem."""
     from pptx import Presentation
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import MSO_AUTO_SIZE
     from pptx.util import Pt
     path, base = files[0]
     doc = open_pdf(path)
+    background = open_pdf(path)  # cópia de onde sai a imagem do slide, sem o texto que vai para as caixas
+    families = font_families(doc)
     prs = Presentation()
     first = doc[0].rect
     scale = min(1, 4000 / max(first.width, first.height))  # o PowerPoint limita o slide a 56 polegadas
@@ -702,10 +742,32 @@ def pdf_to_ppt(files, form, tmp):
     for page in doc:
         slide = prs.slides.add_slide(prs.slide_layouts[6])  # layout em branco
         # Encaixa a página no slide sem distorcer, caso ela tenha outro formato
-        fit = min(prs.slide_width / page.rect.width, prs.slide_height / page.rect.height)
+        fit = min(prs.slide_width / page.rect.width, prs.slide_height / page.rect.height)  # EMU por ponto
         w, h = round(page.rect.width * fit), round(page.rect.height * fit)
-        image = io.BytesIO(page.get_pixmap(dpi=150).tobytes('jpg', jpg_quality=92))
-        slide.shapes.add_picture(image, (prs.slide_width - w) // 2, (prs.slide_height - h) // 2, w, h)
+        left, top = (prs.slide_width - w) // 2, (prs.slide_height - h) // 2
+        lines = [] if page.rotation else slide_lines(page)
+        back = background[page.number]
+        if lines:
+            for _, spans in lines:
+                for span in spans:  # só a faixa do meio da letra: não leva junto a linha de cima ou de baixo
+                    x0, y0, x1, y1 = span['bbox']
+                    back.add_redact_annot(pymupdf.Rect(x0, y0 + 0.2 * (y1 - y0), x1, y1 - 0.2 * (y1 - y0)), fill=False)
+            back.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
+        image = io.BytesIO(back.get_pixmap(dpi=150).tobytes('jpg', jpg_quality=92))
+        slide.shapes.add_picture(image, left, top, w, h)
+        for rect, spans in lines:
+            box = slide.shapes.add_textbox(left + round(rect.x0 * fit), top + round(rect.y0 * fit),
+                                           round(rect.width * fit), round(rect.height * fit))
+            frame = box.text_frame
+            frame.word_wrap, frame.auto_size = False, MSO_AUTO_SIZE.NONE  # a linha fica como no PDF
+            frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+            for span in spans:
+                run = frame.paragraphs[0].add_run()
+                run.text = span['text']
+                run.font.size = Pt(span['size'] * fit / 12700)
+                run.font.name = families.get(span['font'], span['font'])
+                run.font.bold, run.font.italic = bool(span['flags'] & 16), bool(span['flags'] & 2)
+                run.font.color.rgb = RGBColor.from_string(f"{span['color']:06X}")
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue(), f"{base}.pptx"

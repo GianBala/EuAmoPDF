@@ -1428,6 +1428,42 @@ def test_pdf_to_ppt_one_slide_per_page(client):
     assert abs(picture.width / picture.height - 595 / 842) < 0.01
 
 
+def ppt_texts(data):
+    pptx = pytest.importorskip("pptx")
+    prs = pptx.Presentation(io.BytesIO(data))
+    return prs, [[shape.text_frame.text for shape in slide.shapes if shape.has_text_frame] for slide in prs.slides]
+
+
+def test_pdf_to_ppt_text_is_editable(client):
+    """Cada página virava uma imagem só, e o texto não dava para editar (o iLovePDF entrega editável)."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.draw_rect(pymupdf.Rect(60, 200, 300, 260), color=None, fill=(0.2, 0.4, 0.8))  # o desenho fica no fundo
+    page.insert_text((72, 100), "Relatório anual", fontsize=20)
+    page.insert_text((72, 130), "Receita cresceu 12%", fontsize=11, color=(0.8, 0, 0))
+    prs, texts = ppt_texts(post(client, "pdf-to-ppt", ("relatorio.pdf", doc.tobytes())).data)
+    assert texts == [["Relatório anual", "Receita cresceu 12%"]]
+    shapes = prs.slides[0].shapes
+    title, line = shapes[1].text_frame.paragraphs[0].runs[0], shapes[2].text_frame.paragraphs[0].runs[0]
+    assert round(title.font.size.pt) == 20 and str(line.font.color.rgb) == "CC0000"
+    # Na imagem de fundo, onde estava o texto agora é só o branco da página; o desenho continua lá
+    background = Image.open(io.BytesIO(shapes[0].image.blob)).convert("L")
+    dpi = background.width / 595
+    assert background.crop([round(v * dpi) for v in (72, 82, 230, 104)]).getextrema()[0] > 200
+    assert background.getpixel((round(150 * dpi), round(230 * dpi))) < 150
+
+
+def test_pdf_to_ppt_scanned_page_stays_an_image(client):
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_image(page.rect, stream=make_photo((400, 560)))
+    # O texto invisível que o OCR põe por cima da imagem não pode virar texto visível no slide
+    page.insert_text((72, 100), "texto do OCR", render_mode=3)
+    prs, texts = ppt_texts(post(client, "pdf-to-ppt", ("escaneado.pdf", doc.tobytes())).data)
+    assert texts == [[]]
+    assert len(prs.slides[0].shapes) == 1
+
+
 # --- Converter para PDF ---
 
 def test_images_to_pdf_one_a4_page_per_image(client):
