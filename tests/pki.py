@@ -90,3 +90,21 @@ def timestamp_pdf(authority, pdf):
         tsa_cert=tsa.asn1, certs_to_embed=[authority.asn1],
         tsa_key=keys.PrivateKeyInfo.load(tsa.key.private_bytes(Encoding.DER, PrivateFormat.PKCS8, NoEncryption())))
     return signers.PdfTimeStamper(stamper).timestamp_pdf(IncrementalPdfFileWriter(io.BytesIO(pdf)), "sha256").getvalue()
+
+
+def append_update(pdf, change):
+    """Uma atualização incremental depois da assinatura ("page", "title" ou "field"), escrita pelo próprio pyHanko: o
+    saveIncr do PyMuPDF 1.25 não consegue regravar um PDF que ele assinou ("cannot find object in xref")."""
+    from pyhanko.pdf_utils import generic
+    from pyhanko.pdf_utils.writer import PageObject
+    from pyhanko.sign.fields import SigFieldSpec, append_signature_field
+    writer = IncrementalPdfFileWriter(io.BytesIO(pdf))
+    if change == "page":
+        writer.insert_page(PageObject(contents=writer.add_object(generic.StreamObject(stream_data=b"")), media_box=(0, 0, 595, 842)))
+    elif change == "title":
+        writer.set_info(generic.DictionaryObject({generic.NameObject("/Title"): generic.TextStringObject("outro")}))
+    else:
+        append_signature_field(writer, SigFieldSpec("Signature2", box=(72, 700, 272, 760), on_page=0))
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()

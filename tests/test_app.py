@@ -2006,23 +2006,13 @@ def test_changing_the_signed_content_invalidates_the_signature(signed):
     assert row(entry, "Certificado")["texto"].startswith("Não avaliado")  # o nome não está comprovado
 
 
-def test_a_page_added_after_signing_invalidates_it(signed, tmp_path):
-    path = tmp_path / "a.pdf"
-    path.write_bytes(signed)
-    doc = pymupdf.open(path)
-    doc.new_page()
-    doc.saveIncr()
-    [entry] = euamopdf.check_signatures(path.read_bytes())
+def test_a_page_added_after_signing_invalidates_it(signed):
+    [entry] = euamopdf.check_signatures(certs.append_update(signed, "page"))
     assert entry["veredito"] == "invalida" and "alterado depois" in entry["resumo"]
 
 
-def test_changes_the_signature_allows_ask_for_attention_not_for_alarm(signed, tmp_path):
-    path = tmp_path / "a.pdf"
-    path.write_bytes(signed)
-    doc = pymupdf.open(path)
-    doc.set_metadata({"title": "Novo título"})
-    doc.saveIncr()
-    [entry] = euamopdf.check_signatures(path.read_bytes())
+def test_changes_the_signature_allows_ask_for_attention_not_for_alarm(signed):
+    [entry] = euamopdf.check_signatures(certs.append_update(signed, "title"))
     assert entry["veredito"] == "atencao" and row(entry, "Conteúdo")["ok"] is None
 
 
@@ -2104,27 +2094,17 @@ def test_a_second_visible_signature_after_a_certification_keeps_the_first_one_va
     assert row(second, "Conteúdo")["texto"] == "O documento é o mesmo que foi assinado."
 
 
-def test_a_certification_that_allows_no_changes_is_still_broken_by_a_new_signature_field(pki, govbr, tmp_path):
+def test_a_certification_that_allows_no_changes_is_still_broken_by_a_new_signature_field(pki, govbr):
     """O pyHanko nem assina depois de uma certificação sem mudanças; o campo visível novo, que uma segunda
     assinatura criaria, entra por atualização incremental, e a primeira tem que continuar reprovada."""
-    path = tmp_path / "a.pdf"
-    path.write_bytes(certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.NO_CHANGES))
-    doc = pymupdf.open(path)
-    field = pymupdf.Widget()
-    field.field_type, field.field_name, field.rect = pymupdf.PDF_WIDGET_TYPE_SIGNATURE, "Signature2", pymupdf.Rect(72, 700, 272, 760)
-    doc[0].add_widget(field)
-    doc.saveIncr()
-    [entry] = euamopdf.check_signatures(path.read_bytes())
+    pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.NO_CHANGES)
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "field"))
     assert entry["veredito"] == "invalida" and row(entry, "Conteúdo")["ok"] is False
 
 
-def test_the_exception_for_later_signatures_does_not_hide_other_changes(pki, govbr, tmp_path):
-    path = tmp_path / "a.pdf"
-    path.write_bytes(certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.FILL_FORMS))
-    doc = pymupdf.open(path)
-    doc.new_page()
-    doc.saveIncr()
-    [entry] = euamopdf.check_signatures(path.read_bytes())
+def test_the_exception_for_later_signatures_does_not_hide_other_changes(pki, govbr):
+    pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.FILL_FORMS)
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "page"))
     assert entry["veredito"] == "invalida"
 
 
@@ -2147,9 +2127,9 @@ def test_a_later_signature_is_expected_with_or_without_a_declared_permission(pki
     assert second_entry["veredito"] == "ok"
 
 
-def test_other_changes_after_a_signature_that_does_not_declare_what_it_allows_stay_amber(pki, govbr, tmp_path):
+def test_other_changes_after_a_signature_that_does_not_declare_what_it_allows_stay_amber(pki, govbr):
     pdf = sign_pdf_with(pki.issue(govbr))
-    [entry] = euamopdf.check_signatures(appended(tmp_path, pdf, lambda doc: doc.set_metadata({"title": "outro"})))
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "title"))
     assert entry["veredito"] == "atencao" and "não declara o que permite" in row(entry, "Conteúdo")["texto"]
 
 
@@ -2295,20 +2275,11 @@ def test_the_revocation_download_never_follows_a_redirect(monkeypatch):
     assert hits == ["/lista.crl"]
 
 
-def appended(tmp_path, pdf, change):
-    path = tmp_path / "a.pdf"
-    path.write_bytes(pdf)
-    doc = pymupdf.open(path)
-    change(doc)
-    doc.saveIncr()
-    return path.read_bytes()
-
-
-def test_a_certification_that_allows_no_changes_is_broken_even_by_a_metadata_change(pki, govbr, tmp_path):
+def test_a_certification_that_allows_no_changes_is_broken_even_by_a_metadata_change(pki, govbr):
     """Medido: o pyHanko trata os metadados como inofensivos, e um título trocado depois de uma certificação P=1
     ("nenhuma mudança") saía verde."""
     pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.NO_CHANGES)
-    [entry] = euamopdf.check_signatures(appended(tmp_path, pdf, lambda doc: doc.set_metadata({"title": "outro"})))
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "title"))
     assert entry["veredito"] == "invalida"
 
 
