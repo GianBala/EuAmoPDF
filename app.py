@@ -10,6 +10,7 @@ import random
 import re
 import sys
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -201,6 +202,24 @@ def accept_changes(src, tmp):
     return out
 
 
+def run_soffice(args, timeout):
+    """Roda o LibreOffice num grupo de processos próprio. O soffice só lança o soffice.bin, que é quem
+    converte: no tempo esgotado, matar só o primeiro deixava o outro rodando para sempre (e, no
+    Windows, segurando os arquivos da pasta temporária). Mata o grupo inteiro, como o build.py."""
+    windows = sys.platform == 'win32'
+    group = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if windows else {'start_new_session': True}
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **group)
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if windows:
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        raise
+
+
 def libreoffice_to_pdf(src, out_dir):
     soffice = find_soffice()
     if not soffice:
@@ -208,9 +227,8 @@ def libreoffice_to_pdf(src, out_dir):
     # Perfil próprio por conversão: não conflita com outro LibreOffice aberto nem com conversões simultâneas
     profile = (out_dir / 'perfil').as_uri()
     try:
-        subprocess.run([soffice, '--headless', '--norestore', f'-env:UserInstallation={profile}',
-                        '--convert-to', 'pdf', '--outdir', str(out_dir), str(src)],
-                       capture_output=True, timeout=LIBREOFFICE_TIMEOUT)
+        run_soffice([soffice, '--headless', '--norestore', f'-env:UserInstallation={profile}',
+                     '--convert-to', 'pdf', '--outdir', str(out_dir), str(src)], timeout=LIBREOFFICE_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise UserError("O LibreOffice demorou demais para converter este arquivo.")
     # O LibreOffice sai com código 0 mesmo quando falha: o que vale é o PDF existir
