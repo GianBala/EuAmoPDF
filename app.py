@@ -279,6 +279,25 @@ def images_to_pdf(files, form, tmp):
     return pdf_bytes(out), name
 
 
+def fix_docx(path):
+    """Corrige o .docx do pdf2docx: ele grava a largura certa em cada célula, mas monta a grade da
+    tabela com as colunas iguais, e os editores desenham pela grade. A coluna estreitada quebrava o
+    texto, e a altura exata da linha cortava o resto. A grade passa a vir de uma linha sem mesclagem."""
+    from docx import Document
+    from docx.oxml.ns import qn
+    doc = Document(path)
+    for table in doc.element.body.iter(qn('w:tbl')):  # também as tabelas dentro de células
+        grid = table.find(qn('w:tblGrid')).findall(qn('w:gridCol'))
+        for row in table.findall(qn('w:tr')):
+            widths = [tc.find(f"{qn('w:tcPr')}/{qn('w:tcW')}") for tc in row.findall(qn('w:tc'))]
+            spans = row.findall(f"{qn('w:tc')}/{qn('w:tcPr')}/{qn('w:gridSpan')}")
+            if len(widths) == len(grid) and not spans and None not in widths:
+                for col, width in zip(grid, widths):
+                    col.set(qn('w:w'), width.get(qn('w:w')))
+                break
+    doc.save(path)
+
+
 def pdf_to_word(files, form, tmp):
     path, base = files[0]
     open_pdf(path)
@@ -289,6 +308,7 @@ def pdf_to_word(files, form, tmp):
         cv.convert(str(out))
     finally:
         cv.close()
+    fix_docx(out)
     return out.read_bytes(), f"{base}.docx"
 
 
