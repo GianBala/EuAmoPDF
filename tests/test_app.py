@@ -1240,6 +1240,23 @@ def test_pdf_to_word_uses_the_real_font_name(client):
     assert set(re.findall(r'w:ascii="([^"]+)"', xml)) == {"Nimbus Roman"}
 
 
+def test_pdf_to_word_keeps_what_is_in_annotations_and_fields(client):
+    """O pdf2docx só tira as imagens do conteúdo da página: o selo visível de uma assinatura (gov.br),
+    que fica num campo ou numa anotação, sumia. E o checkbox marcado virava "3", o código do ✓ na
+    fonte ZapfDingbats."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Aceito os termos")
+    box = pymupdf.Widget()
+    box.field_type, box.field_name, box.field_value = pymupdf.PDF_WIDGET_TYPE_CHECKBOX, "aceito", True
+    box.rect = pymupdf.Rect(190, 88, 204, 102)
+    page.add_widget(box)
+    page.add_stamp_annot(pymupdf.Rect(72, 200, 252, 290), stamp=make_image())
+    xml = unzip(post(client, "pdf-to-word", ("doc.pdf", doc.tobytes())).data)["word/document.xml"].decode()
+    assert xml.count("<pic:pic") == 1
+    assert "✓" in xml and not re.search(r"<w:t[^>]*>\s*3\s*</w:t>", xml)
+
+
 def test_pdf_to_word_converts_once_when_no_text_is_lost(client, monkeypatch):
     from pdf2docx import Converter
     calls = []

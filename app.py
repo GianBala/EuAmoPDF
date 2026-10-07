@@ -280,13 +280,24 @@ def images_to_pdf(files, form, tmp):
     return pdf_bytes(out), name
 
 
+# Códigos da fonte ZapfDingbats que os checkboxes e botões de opção do PDF usam, no Unicode
+DINGBATS = str.maketrans({'3': '✓', '4': '✔', '5': '✕', '6': '✖', '7': '✗', '8': '✘', 'l': '●', 'n': '■', 'u': '◆', 'H': '★'})
+
+
 def fix_docx(path):
-    """Corrige o .docx do pdf2docx: ele grava a largura certa em cada célula, mas monta a grade da
-    tabela com as colunas iguais, e os editores desenham pela grade. A coluna estreitada quebrava o
-    texto, e a altura exata da linha cortava o resto. A grade passa a vir de uma linha sem mesclagem."""
+    """Corrige o .docx do pdf2docx. Ele grava a largura certa em cada célula, mas monta a grade da
+    tabela com as colunas iguais, e os editores desenham pela grade: a coluna estreitada quebrava o
+    texto, e a altura exata da linha cortava o resto. A grade passa a vir de uma linha sem mesclagem.
+    E grava a marca do checkbox como o código dela na ZapfDingbats ("3"), que nenhum editor tem."""
     from docx import Document
     from docx.oxml.ns import qn
     doc = Document(path)
+    for fonts in doc.element.body.iter(qn('w:rFonts')):
+        if 'dingbats' in (fonts.get(qn('w:ascii')) or '').lower():
+            for text in fonts.getparent().getparent().iter(qn('w:t')):  # rFonts > rPr > r
+                text.text = (text.text or '').translate(DINGBATS)
+            for attr in ('w:ascii', 'w:hAnsi'):
+                fonts.set(qn(attr), 'Segoe UI Symbol')
     for table in doc.element.body.iter(qn('w:tbl')):  # também as tabelas dentro de células
         grid = table.find(qn('w:tblGrid')).findall(qn('w:gridCol'))
         for row in table.findall(qn('w:tr')):
@@ -366,8 +377,13 @@ def name_fonts(doc):
 def pdf_to_word(files, form, tmp):
     path, base = files[0]
     pdf = open_pdf(path)
+    # Anotações e campos (o selo visível de uma assinatura, checkboxes) viram conteúdo da página: o
+    # pdf2docx só tira as imagens do conteúdo. A assinatura deixa de valer só nesta cópia
+    annotated = any(page.first_annot or page.first_widget for page in pdf)
+    if annotated:
+        pdf.bake()
     pdf_chars = text_chars(page.get_text() for page in pdf)
-    if name_fonts(pdf):
+    if name_fonts(pdf) or annotated:
         path = tmp / 'entrada_word.pdf'
         pdf.save(path)
     from pdf2docx import Converter  # importação lenta: só quando usada
