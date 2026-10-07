@@ -469,14 +469,141 @@ def images_to_pdf(files, form, tmp):
 DINGBATS = str.maketrans({'3': '✓', '4': '✔', '5': '✕', '6': '✖', '7': '✗', '8': '✘', 'l': '●', 'n': '■', 'u': '◆', 'H': '★'})
 
 
-def fix_docx(path):
+def beside(a, b):
+    """Se dois blocos do PDF, (página, retângulo), estão lado a lado: mesma página, mesma faixa de
+    altura, sem se sobrepor na largura."""
+    (page_a, (ax0, ay0, ax1, ay1)), (page_b, (bx0, by0, bx1, by1)) = a, b
+    overlap = min(ay1, by1) - max(ay0, by0)
+    return page_a == page_b and overlap >= 0.5 * min(ay1 - ay0, by1 - by0) and (bx0 >= ax1 - 1 or ax0 >= bx1 - 1)
+
+
+def blank(el):
+    """O parágrafo vazio com que o pdf2docx separa uma tabela da outra."""
+    from docx.oxml.ns import qn
+    return el.tag == qn('w:p') and not ''.join(t.text or '' for t in el.iter(qn('w:t'))).strip() \
+        and el.find(f".//{qn('w:drawing')}") is None and el.find(f".//{qn('w:sectPr')}") is None
+
+
+def float_beside_text(body, blocks):
+    """Tabela ao lado de texto no PDF (a caixa "Inscrição Nº" ao lado do título de uma ficha) vai para
+    uma caixa de texto na posição em que estava, à frente do texto: sem a detecção de tabelas sem
+    bordas, o pdf2docx a punha embaixo do texto, e o resto da página descia. Devolve as tabelas
+    (página, retângulo) que ficaram no nível de cima, na ordem do .docx."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import qn
+    tables = [(i, page, bbox) for i, (page, kind, bbox) in enumerate(blocks) if kind == 'TableBlock']
+    elements = body.findall(qn('w:tbl'))
+    if len(elements) != len(tables):
+        return None  # não dá para saber qual tabela é qual
+    kept = []
+    for n, ((i, page, bbox), table) in enumerate(zip(tables, elements)):
+        host = table.getprevious()
+        while host is not None and blank(host):
+            host = host.getprevious()
+        if i == 0 or blocks[i - 1][1] != 'TextBlock' or not beside(blocks[i - 1][::2], (page, bbox)) \
+                or host is None or host.tag != qn('w:p'):
+            kept.append((page, bbox))
+            continue
+        x0, y0, x1, y1 = (round(v * 12700) for v in bbox)  # pontos em EMU
+        indent = table.find(f"{qn('w:tblPr')}/{qn('w:tblInd')}")
+        if indent is not None:
+            indent.set(qn('w:w'), '0')
+        follower = table.getnext()
+        if follower is not None and blank(follower):
+            body.remove(follower)
+        run = parse_xml(
+            '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:drawing>'
+            f'<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{251659264 + n}" '
+            'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+            f'<wp:positionH relativeFrom="page"><wp:posOffset>{x0}</wp:posOffset></wp:positionH>'
+            f'<wp:positionV relativeFrom="page"><wp:posOffset>{y0}</wp:posOffset></wp:positionV>'
+            f'<wp:extent cx="{x1 - x0}" cy="{y1 - y0}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>'
+            f'<wp:docPr id="{9000 + n}" name="Tabela {n + 1}"/><wp:cNvGraphicFramePr/>'
+            '<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/>'
+            f'<a:ext cx="{x1 - x0}" cy="{y1 - y0}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            '<a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>'
+            '<w:p><w:pPr><w:spacing w:line="20" w:lineRule="exact"/></w:pPr></w:p>'  # a caixa termina num parágrafo
+            '</w:txbxContent></wps:txbx><wps:bodyPr rot="0" vert="horz" wrap="square" lIns="0" tIns="0" rIns="0" '
+            'bIns="0" anchor="t" anchorCtr="0"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic>'
+            '</wp:anchor></w:drawing></w:r>')
+        run.find(f".//{qn('w:txbxContent')}").insert(0, table)
+        host.append(run)
+    return kept
+
+
+def side_by_side(body, tables):
+    """Põe numa linha de uma tabela sem bordas as tabelas que no PDF ficam lado a lado. Sem a detecção
+    de tabelas sem bordas, o pdf2docx as grava uma embaixo da outra: as caixas de Data de Nascimento,
+    Identidade, CPF e Sexo de uma ficha saíam em escada, e a ficha passava de 2 para 4 páginas.
+    tables: (página, retângulo no PDF) de cada tabela do nível de cima, na ordem do .docx."""
+    from docx.oxml import OxmlElement, parse_xml
+    from docx.oxml.ns import nsdecls, qn
+    elements = body.findall(qn('w:tbl'))
+    if len(elements) != len(tables):
+        return  # não dá para saber qual tabela é qual
+
+    def twips(points):
+        return str(round(points * 20))
+
+    i = 0
+    while i < len(elements):
+        group, separators = [i], []
+        while (j := group[-1] + 1) < len(elements):
+            between, el = [], elements[j - 1].getnext()
+            while el is not None and el is not elements[j]:
+                between.append(el)
+                el = el.getnext()
+            if el is None or not all(blank(e) for e in between) or not all(beside(tables[k], tables[j]) for k in group):
+                break
+            group.append(j)
+            separators += between
+        if len(group) > 1:
+            boxes = sorted(((tables[k][1], elements[k]) for k in group), key=lambda item: item[0][0])
+            indent = boxes[0][1].find(f"{qn('w:tblPr')}/{qn('w:tblInd')}")
+            layout = parse_xml(
+                f'<w:tbl {nsdecls("w")}><w:tblPr><w:tblW w:w="0" w:type="auto"/>'
+                f'<w:tblInd w:w="{round(float(indent.get(qn("w:w")))) if indent is not None else 0}" w:type="dxa"/>'
+                '<w:tblLayout w:type="fixed"/><w:tblCellMar><w:left w:w="0" w:type="dxa"/>'
+                '<w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid/><w:tr/></w:tbl>')
+            elements[group[0]].addprevious(layout)
+            for el in separators:
+                body.remove(el)
+            grid, row, x = layout.find(qn('w:tblGrid')), layout.find(qn('w:tr')), boxes[0][0][0]
+            for (x0, _, x1, _), table in boxes:
+                for width, content in ((x0 - x, None), (x1 - x0, table)):
+                    if content is None and width < 1:
+                        continue  # sem espaço antes da tabela
+                    col = OxmlElement('w:gridCol')
+                    col.set(qn('w:w'), twips(width))
+                    grid.append(col)
+                    cell = parse_xml(f'<w:tc {nsdecls("w")}><w:tcPr><w:tcW w:w="{twips(width)}" w:type="dxa"/></w:tcPr></w:tc>')
+                    if content is not None:
+                        inner = content.find(f"{qn('w:tblPr')}/{qn('w:tblInd')}")
+                        if inner is not None:
+                            inner.set(qn('w:w'), '0')  # a posição agora vem da coluna
+                        cell.append(content)
+                    cell.append(OxmlElement('w:p'))  # toda célula termina num parágrafo
+                    row.append(cell)
+                x = x1
+        i = group[-1] + 1
+
+
+def fix_docx(path, blocks=None):
     """Corrige o .docx do pdf2docx. Ele grava a largura certa em cada célula, mas monta a grade da
     tabela com as colunas iguais, e os editores desenham pela grade: a coluna estreitada quebrava o
     texto, e a altura exata da linha cortava o resto. A grade passa a vir de uma linha sem mesclagem.
-    E grava a marca do checkbox como o código dela na ZapfDingbats ("3"), que nenhum editor tem."""
+    E grava a marca do checkbox como o código dela na ZapfDingbats ("3"), que nenhum editor tem. Com
+    blocks, os blocos do pdf2docx como (página, tipo, retângulo), põe as tabelas que no PDF ficam ao
+    lado de texto ou de outra tabela de volta nesse lugar (ver float_beside_text e side_by_side)."""
     from docx import Document
     from docx.oxml.ns import qn
     doc = Document(path)
+    if blocks and (tables := float_beside_text(doc.element.body, blocks)):
+        side_by_side(doc.element.body, tables)
     for fonts in doc.element.body.iter(qn('w:rFonts')):
         if 'dingbats' in (fonts.get(qn('w:ascii')) or '').lower():
             for text in fonts.getparent().getparent().iter(qn('w:t')):  # rFonts > rPr > r
@@ -574,20 +701,25 @@ def pdf_to_word(files, form, tmp):
     from pdf2docx import Converter  # importação lenta: só quando usada
 
     def convert(out, **options):
+        """(parte do texto que chegou, .docx, blocos do nível de cima como (página, tipo, retângulo))."""
         cv = Converter(str(path))
         try:
             cv.convert(str(out), **options)
+            blocks = [(page.id, type(block).__name__, tuple(block.bbox)) for page in getattr(cv, 'pages', [])
+                      if not page.skip_parsing for section in page.sections for column in section for block in column.blocks]
         finally:
             cv.close()
-        return docx_text_share(pdf_chars, out), out
+        return docx_text_share(pdf_chars, out), out, blocks
 
     # A detecção de tabelas sem bordas do pdf2docx às vezes descarta o texto de tabelas com bordas
-    # (um PDF do "Microsoft Print to PDF" perdia 41% das palavras). Sem ela o texto fica, mas tabelas
-    # lado a lado saem uma embaixo da outra: por isso ela só é desligada quando falta texto.
-    share, out = convert(tmp / 'saida.docx')
+    # (um PDF do "Microsoft Print to PDF" perdia 41% das palavras): a tabela de layout que ela monta
+    # com as colunas de uma linha de caixas lado a lado engole as tabelas que atravessam essas colunas.
+    # Sem ela o texto fica, e o que ela poria lado a lado é posto no fix_docx.
+    share, out, _ = convert(tmp / 'saida.docx')
+    blocks = None
     if share < WORD_MIN_TEXT:
-        share, out = max((share, out), convert(tmp / 'saida2.docx', parse_stream_table=False), key=lambda r: r[0])
-    fix_docx(out)
+        share, out, blocks = max((share, out, None), convert(tmp / 'saida2.docx', parse_stream_table=False), key=lambda r: r[0])
+    fix_docx(out, blocks)
     lost = ["Parte do texto do PDF pode não ter sido convertida: confira o documento."] if share < WORD_MIN_TEXT else []
     return out.read_bytes(), f"{base}.docx", *lost
 
