@@ -592,6 +592,49 @@ def side_by_side(body, tables):
         i = group[-1] + 1
 
 
+def fix_sections(body):
+    """O pdf2docx grava texto lado a lado (duas assinaturas) como duas seções de colunas, a segunda
+    começando na próxima coluna: o LibreOffice não conhece esse tipo de quebra e começava uma página
+    nova. Elas viram uma seção só, com uma quebra de coluna. E o parágrafo vazio que guarda uma quebra
+    de seção, numa página já cheia, abria uma página em branco: ele passa a ter 1 pt de altura (linha e
+    fonte), e o separador vazio entre ele e uma tabela sai."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls, qn
+
+    def columns(sect):
+        cols = sect.find(qn('w:cols'))
+        return (cols.get(qn('w:num')) if cols is not None else None) or '1'
+
+    previous = None
+    for paragraph in body.findall(qn('w:p')):
+        sect = paragraph.find(f"{qn('w:pPr')}/{qn('w:sectPr')}")
+        if sect is None:
+            continue
+        kind = sect.find(qn('w:type'))
+        if previous is not None and kind is not None and kind.get(qn('w:val')) == 'nextColumn':
+            before = previous.find(f"{qn('w:pPr')}/{qn('w:sectPr')}")
+            if columns(before) == columns(sect) != '1':
+                start = before.find(qn('w:type'))
+                kind.set(qn('w:val'), start.get(qn('w:val')) if start is not None else 'nextPage')
+                before.getparent().remove(before)
+                previous.append(parse_xml(f'<w:r {nsdecls("w")}><w:br w:type="column"/></w:r>'))
+        previous = paragraph
+    for paragraph in body.findall(qn('w:p')):
+        sect = paragraph.find(f"{qn('w:pPr')}/{qn('w:sectPr')}")
+        if sect is None or ''.join(t.text or '' for t in paragraph.iter(qn('w:t'))).strip():
+            continue
+        spacing = paragraph.get_or_add_pPr().get_or_add_spacing()
+        for name, value in (('before', '0'), ('after', '0'), ('line', '20'), ('lineRule', 'exact')):
+            spacing.set(qn(f'w:{name}'), value)
+        if sect.getprevious() is None or sect.getprevious().tag != qn('w:rPr'):
+            # o LibreOffice mede o parágrafo vazio pela fonte da marca de parágrafo
+            sect.addprevious(parse_xml(f'<w:rPr {nsdecls("w")}><w:sz w:val="2"/><w:szCs w:val="2"/></w:rPr>'))
+        separator = paragraph.getprevious()  # entre uma tabela e a quebra, a própria quebra fecha a tabela
+        if separator is not None and blank(separator) and separator.getprevious() is not None \
+                and separator.getprevious().tag == qn('w:tbl'):
+            body.remove(separator)
+
+
 def fix_docx(path, blocks=None):
     """Corrige o .docx do pdf2docx. Ele grava a largura certa em cada célula, mas monta a grade da
     tabela com as colunas iguais, e os editores desenham pela grade: a coluna estreitada quebrava o
@@ -604,6 +647,7 @@ def fix_docx(path, blocks=None):
     doc = Document(path)
     if blocks and (tables := float_beside_text(doc.element.body, blocks)):
         side_by_side(doc.element.body, tables)
+    fix_sections(doc.element.body)
     for fonts in doc.element.body.iter(qn('w:rFonts')):
         if 'dingbats' in (fonts.get(qn('w:ascii')) or '').lower():
             for text in fonts.getparent().getparent().iter(qn('w:t')):  # rFonts > rPr > r
