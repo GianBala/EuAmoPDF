@@ -553,9 +553,34 @@ def pdf_to_jpg(files, form, tmp):
     return buf.getvalue(), f"{base}_imagens.zip"
 
 
+AMOUNT = re.compile(r'(-?)\s*(R\$)?\s*(-?)\s*(\d{1,3}(?:\.\d{3})+|\d+),(\d+)')
+DATE = re.compile(r'(\d\d)/(\d\d)/(\d{4})')
+
+
+def sheet_cell(ws, text):
+    """Célula da planilha: número para os valores com vírgula decimal (-1.234,56, R$ 10,00) e data
+    para dd/mm/aaaa, para o Excel somar e ordenar. O resto, inteiros inclusive, fica texto: contas,
+    CEPs e documentos têm zeros à esquerda."""
+    from openpyxl.cell.cell import Cell, ILLEGAL_CHARACTERS_RE
+    if not text:
+        return None
+    if m := AMOUNT.fullmatch(text.strip()):
+        sign = -1 if m[1] or m[3] else 1
+        cell = Cell(ws, value=sign * float(f"{m[4].replace('.', '')}.{m[5]}"))
+        cell.number_format = ('"R$" ' if m[2] else '') + '#,##0.' + '0' * len(m[5])
+        return cell
+    if m := DATE.fullmatch(text.strip()):
+        try:
+            cell = Cell(ws, value=datetime(int(m[3]), int(m[2]), int(m[1])))
+        except ValueError:  # 31/02/2026 e afins: fica como veio
+            return ILLEGAL_CHARACTERS_RE.sub('', text)
+        cell.number_format = 'dd/mm/yyyy'
+        return cell
+    return ILLEGAL_CHARACTERS_RE.sub('', text)
+
+
 def pdf_to_excel(files, form, tmp):
     from openpyxl import Workbook
-    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
     path, base = files[0]
     doc = open_pdf(path)
     wb = Workbook()
@@ -564,7 +589,7 @@ def pdf_to_excel(files, form, tmp):
         for n, table in enumerate(page.find_tables().tables, 1):
             ws = wb.create_sheet(f"Pág {page.number + 1} - Tabela {n}")
             for row in table.extract():
-                ws.append([ILLEGAL_CHARACTERS_RE.sub('', cell) if cell else None for cell in row])
+                ws.append([sheet_cell(ws, cell) for cell in row])
     if not wb.sheetnames:
         raise UserError("Nenhuma tabela encontrada neste PDF. Se ele for escaneado, passe o OCR antes.")
     buf = io.BytesIO()
