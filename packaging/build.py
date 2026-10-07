@@ -10,6 +10,7 @@ O PyInstaller não gera para outro sistema: cada versão é construída no seu (
 executaveis.yml faz as duas no GitHub). No fim, o arquivo pronto é aberto de verdade e processa
 alguns documentos: se faltar um módulo ou um arquivo embutido, o build falha aqui, não no usuário.
 """
+import hashlib
 import io
 import os
 import re
@@ -30,8 +31,18 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD, DIST = ROOT / 'build', ROOT / 'dist'
 ICON = ROOT / 'packaging' / 'icone.png'  # o PyInstaller converte para .ico no Windows
 WINDOWS = sys.platform == 'win32'
+# Tudo o que o build baixa vai numa versão fixa e conferido pelo SHA-256: o appimagetool roda aqui, e
+# o runtime fica na frente de todo AppImage gerado (a versão "continuous" mudava a cada commit deles).
+# Para atualizar, troque a versão e o hash juntos.
 TESSDATA_URL = 'https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/{}.traineddata'
-APPIMAGETOOL_URL = 'https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage'
+TESSDATA_SHA256 = {
+    'por': 'c4932b937207a9514b7514d518b931a99938c02a28a5a5a553f8599ed58b7deb',
+    'eng': '7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2',
+}
+APPIMAGETOOL = ('https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage',
+                'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0')
+RUNTIME = ('https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64',
+           '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d')
 # Terminal=true: o app não tem janela própria, e o terminal é como se fecha (igual ao console no Windows)
 DESKTOP = """[Desktop Entry]
 Type=Application
@@ -44,12 +55,20 @@ Terminal=true
 """
 
 
-def download(url, path):
-    """Baixa para um arquivo parcial e só o põe no lugar quando completo."""
-    if not path.exists():
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def download(url, path, digest):
+    """Baixa para um arquivo parcial e só o põe no lugar se o SHA-256 conferir; um arquivo já baixado
+    também é conferido, e baixado de novo se não bater."""
+    if not path.exists() or sha256(path) != digest:
         path.parent.mkdir(parents=True, exist_ok=True)
         partial = path.with_name(path.name + '.part')
         urllib.request.urlretrieve(url, partial)
+        if sha256(partial) != digest:
+            partial.unlink()
+            sys.exit(f'{url}: o SHA-256 não confere')
         partial.replace(path)
     return path
 
@@ -76,11 +95,13 @@ def build_appimage(tessdata, model):
     (appdir / 'euamopdf.desktop').write_text(DESKTOP)
     shutil.copy(ICON, appdir / 'euamopdf.png')
     smoke_test(run)  # o mesmo binário e AppRun que vão no AppImage, sem extrair 570 MB em /tmp a cada teste
-    tool = download(APPIMAGETOOL_URL, BUILD / 'appimagetool')
+    tool = download(APPIMAGETOOL[0], BUILD / 'appimagetool-1.9.1', APPIMAGETOOL[1])
     tool.chmod(0o755)
+    runtime = download(RUNTIME[0], BUILD / 'runtime-20251108', RUNTIME[1])
     out = DIST / 'EuAmoPDF.AppImage'
-    # EXTRACT_AND_RUN: roda a ferramenta (que também é um AppImage) sem precisar do FUSE
-    subprocess.run([tool, '--no-appstream', appdir, out], check=True,
+    # EXTRACT_AND_RUN: roda a ferramenta (que também é um AppImage) sem precisar do FUSE; sem o
+    # --runtime-file, ela baixaria a versão do dia do runtime
+    subprocess.run([tool, '--no-appstream', '--runtime-file', runtime, appdir, out], check=True,
                    env=os.environ | {'ARCH': 'x86_64', 'APPIMAGE_EXTRACT_AND_RUN': '1'})
     return out
 
@@ -148,11 +169,12 @@ def smoke_test(cmd):
 def main():
     tessdata = BUILD / 'tessdata'
     for lang in ('por', 'eng'):
-        download(TESSDATA_URL.format(lang), tessdata / f'{lang}.traineddata')
+        download(TESSDATA_URL.format(lang), tessdata / f'{lang}.traineddata', TESSDATA_SHA256[lang])
     sys.path.insert(0, str(ROOT))
     import app  # reaproveita o download do modelo de remover fundo, que confere o SHA-256
     model = app.bg_model_path()
-    model.exists() or app.download_bg_model(model)
+    if not model.exists() or sha256(model) != app.BG_MODEL_SHA256:  # o do cache do CI também é conferido
+        app.download_bg_model(model)
     DIST.mkdir(exist_ok=True)
     out = (build_exe if WINDOWS else build_appimage)(tessdata, model)
     print(f'Pronto: {out} ({out.stat().st_size / 1024 / 1024:.0f} MB)')
