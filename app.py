@@ -126,6 +126,9 @@ def msoffice_to_pdf(src, out, app_name):
             pres = office.Presentations.Open(str(src), ReadOnly=True, WithWindow=False)
             try: pres.SaveAs(str(out), 32)  # ppSaveAsPDF
             finally: pres.Close()
+    except Exception as e:
+        e.office_opened = office is not None  # abriu e falhou no arquivo, ou nem abriu
+        raise
     finally:
         if office is not None:
             office.Quit()
@@ -223,8 +226,10 @@ def office_to_pdf(src, tmp, app_name):
         try:
             msoffice_to_pdf(src, out, app_name)
             return out
-        except Exception:
-            app.logger.info("Microsoft Office indisponível; tentando o LibreOffice", exc_info=True)
+        except Exception as e:
+            app.logger.info("O Microsoft Office não converteu; tentando o LibreOffice", exc_info=True)
+            if getattr(e, 'office_opened', False) and not find_soffice():
+                raise UserError("O Microsoft Office não conseguiu converter este arquivo. Veja se ele abre normalmente.")
     out_dir = tmp / 'libreoffice'
     out_dir.mkdir()
     if src.suffix == '.docx':  # .doc, .odt e .rtf com alterações saem com a marcação (decisão D2)

@@ -1666,6 +1666,21 @@ def fake_msoffice(monkeypatch):
     return office
 
 
+@pytest.mark.parametrize("office_opens, message", [
+    (True, "O Microsoft Office não conseguiu converter"),  # abriu e falhou no arquivo: não é falta de programa
+    (False, "é preciso ter o Microsoft Office"),
+])
+def test_office_failure_without_libreoffice_says_what_went_wrong(fake_msoffice, monkeypatch, tmp_path, office_opens, message):
+    monkeypatch.setattr(euamopdf.sys, "platform", "win32")
+    monkeypatch.setattr(euamopdf, "find_soffice", lambda: None)
+    if office_opens:
+        fake_msoffice.Documents.Open.side_effect = RuntimeError("arquivo corrompido")
+    else:
+        sys.modules["win32com.client"].DispatchEx.side_effect = OSError("sem Office")
+    with pytest.raises(euamopdf.UserError, match=message):
+        euamopdf.office_to_pdf(tmp_path / "a.docx", tmp_path, "Word.Application")
+
+
 @pytest.mark.parametrize("app_name", OFFICE_DOCUMENTS)
 def test_microsoft_office_opens_files_with_macros_disabled(fake_msoffice, tmp_path, app_name):
     opened = getattr(fake_msoffice, OFFICE_DOCUMENTS[app_name]).Open
