@@ -20,6 +20,7 @@ import webbrowser # Biblioteca para abrir o navegador
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Timer # Para atrasar a abertura em 1 segundo
@@ -298,18 +299,45 @@ def fix_docx(path):
     doc.save(path)
 
 
+WORD_MIN_TEXT = 0.97  # parte do texto do PDF que o .docx precisa ter; abaixo disso, outra tentativa
+
+
+def text_chars(texts):
+    """Caracteres do texto, sem os espaços: o pdf2docx às vezes junta palavras ("écelebrado")."""
+    return Counter(c for text in texts for c in text if not c.isspace())
+
+
+def docx_text_share(pdf_chars, path):
+    """Quanto do texto do PDF está no .docx, de 0 a 1."""
+    from docx import Document
+    from docx.oxml.ns import qn
+    got = text_chars(t.text or '' for t in Document(path).element.body.iter(qn('w:t')))
+    total = sum(pdf_chars.values())
+    return sum(min(n, got[c]) for c, n in pdf_chars.items()) / total if total else 1
+
+
 def pdf_to_word(files, form, tmp):
     path, base = files[0]
-    open_pdf(path)
+    pdf_chars = text_chars(page.get_text() for page in open_pdf(path))
     from pdf2docx import Converter  # importação lenta: só quando usada
-    out = tmp / 'saida.docx'
-    cv = Converter(str(path))
-    try:
-        cv.convert(str(out))
-    finally:
-        cv.close()
+
+    def convert(out, **options):
+        cv = Converter(str(path))
+        try:
+            cv.convert(str(out), **options)
+        finally:
+            cv.close()
+        return docx_text_share(pdf_chars, out), out
+
+    # A detecção de tabelas sem bordas do pdf2docx às vezes descarta o texto de tabelas com bordas
+    # (um PDF do "Microsoft Print to PDF" perdia 41% das palavras). Sem ela o texto fica, mas tabelas
+    # lado a lado saem uma embaixo da outra: por isso ela só é desligada quando falta texto.
+    share, out = convert(tmp / 'saida.docx')
+    if share < WORD_MIN_TEXT:
+        share, out = max((share, out), convert(tmp / 'saida2.docx', parse_stream_table=False), key=lambda r: r[0])
     fix_docx(out)
-    return out.read_bytes(), f"{base}.docx"
+    lost = ["Parte do texto do PDF pode não ter sido convertida: confira o documento."] if share < WORD_MIN_TEXT else []
+    return out.read_bytes(), f"{base}.docx", *lost
 
 
 def pdf_to_jpg(files, form, tmp):

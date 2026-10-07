@@ -1179,6 +1179,59 @@ def test_pdf_to_word_keeps_the_table_column_widths(client):
     assert grid == cells
 
 
+@pytest.fixture
+def fake_pdf2docx(monkeypatch):
+    """pdf2docx simulado: a conversão n grava um .docx com o texto texts[n]. Devolve (opções de cada
+    conversão, texts)."""
+    docx = pytest.importorskip("docx")
+    import pdf2docx
+    calls, texts = [], []
+
+    class Converter:
+        def __init__(self, path):
+            pass
+
+        def convert(self, out, **options):
+            calls.append(options)
+            document = docx.Document()
+            document.add_paragraph(texts[len(calls) - 1])
+            document.save(out)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pdf2docx, "Converter", Converter)
+    return calls, texts
+
+
+def test_pdf_to_word_tries_again_when_text_is_lost(client, fake_pdf2docx):
+    """A detecção de tabelas sem bordas do pdf2docx descartava o texto de um PDF do "Microsoft Print to
+    PDF" (41% das palavras): sem ela, a segunda tentativa traz o texto de volta."""
+    calls, texts = fake_pdf2docx
+    texts += ["Pagina 1", "Pagina 1 Pagina 2 Pagina 3"]
+    r = post(client, "pdf-to-word", ("doc.pdf", make_pdf(3)))
+    assert calls == [{}, {"parse_stream_table": False}]
+    assert b"Pagina 3" in unzip(r.data)["word/document.xml"]
+    assert "X-Mensagem" not in r.headers
+
+
+def test_pdf_to_word_warns_when_text_is_still_missing(client, fake_pdf2docx):
+    calls, texts = fake_pdf2docx
+    texts += ["Pagina 1", "Pagina 1 Pagina 2"]
+    r = post(client, "pdf-to-word", ("doc.pdf", make_pdf(3)))
+    assert b"Pagina 2" in unzip(r.data)["word/document.xml"]  # fica a tentativa com mais texto
+    assert "Parte do texto" in unquote(r.headers["X-Mensagem"])
+
+
+def test_pdf_to_word_converts_once_when_no_text_is_lost(client, monkeypatch):
+    from pdf2docx import Converter
+    calls = []
+    convert = Converter.convert
+    monkeypatch.setattr(Converter, "convert", lambda self, *args, **kwargs: calls.append(kwargs) or convert(self, *args, **kwargs))
+    assert post(client, "pdf-to-word", ("doc.pdf", make_pdf(3))).status_code == 200
+    assert calls == [{}]
+
+
 def make_table_pdf(rows):
     """PDF com uma tabela de bordas desenhadas, como as geradas por planilhas."""
     doc = pymupdf.open()
