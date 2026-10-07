@@ -107,7 +107,10 @@ def msoffice_to_pdf(src, out, app_name):
         office.AutomationSecurity = 3
         if app_name == "Word.Application":
             office.DisplayAlerts = 0  # wdAlertsNone
-            doc = office.Documents.Open(str(src), ReadOnly=True, ConfirmConversions=False, AddToRecentFiles=False)
+            # Senha qualquer: num documento protegido o Office dá erro na hora, em vez de abrir uma
+            # janela de senha que ninguém vê (o Office está invisível) e prender a conversão para sempre
+            doc = office.Documents.Open(str(src), ReadOnly=True, ConfirmConversions=False, AddToRecentFiles=False,
+                                        PasswordDocument='-', NoEncodingDialog=True)
             try:
                 # A versão final, sem alterações controladas nem comentários, como faz o iLovePDF.
                 # Só no documento aberto: ele é só leitura e não é salvo
@@ -120,7 +123,8 @@ def msoffice_to_pdf(src, out, app_name):
             finally: doc.Close(False)
         elif app_name == "Excel.Application":
             office.DisplayAlerts = False
-            wb = office.Workbooks.Open(str(src), ReadOnly=True, UpdateLinks=0)  # sem buscar planilhas vinculadas
+            wb = office.Workbooks.Open(str(src), ReadOnly=True, UpdateLinks=0,  # sem buscar planilhas vinculadas
+                                       Password='-', IgnoreReadOnlyRecommended=True)
             try: wb.ExportAsFixedFormat(0, str(out))  # xlTypePDF
             finally: wb.Close(False)
         else:
@@ -239,6 +243,11 @@ def libreoffice_to_pdf(src, out_dir):
 
 
 def office_to_pdf(src, tmp, app_name):
+    # .docx, .xlsx e .pptx com senha não são ZIP: o pacote vai criptografado num contêiner OLE
+    with open(src, 'rb') as f:
+        head = f.read(65536)
+    if head.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1') and 'EncryptedPackage'.encode('utf-16-le') in head:
+        raise UserError("Este documento tem senha: remova-a no Office antes de converter.")
     if sys.platform == 'win32':
         out = tmp / 'saida.pdf'
         try:

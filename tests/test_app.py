@@ -1694,8 +1694,26 @@ def test_office_failure_without_libreoffice_says_what_went_wrong(fake_msoffice, 
         fake_msoffice.Documents.Open.side_effect = RuntimeError("arquivo corrompido")
     else:
         sys.modules["win32com.client"].DispatchEx.side_effect = OSError("sem Office")
+    (tmp_path / "a.docx").write_bytes(b"PK")
     with pytest.raises(euamopdf.UserError, match=message):
         euamopdf.office_to_pdf(tmp_path / "a.docx", tmp_path, "Word.Application")
+
+
+@pytest.mark.parametrize("app_name, password", [("Word.Application", "PasswordDocument"), ("Excel.Application", "Password")])
+def test_microsoft_office_does_not_wait_for_a_password(fake_msoffice, tmp_path, app_name, password):
+    """Com o Office invisível, a janela de senha de um documento protegido ninguém via, e a conversão
+    ficava presa para sempre. Com uma senha qualquer, o Office dá erro na hora; sem proteção, ela é
+    ignorada."""
+    euamopdf.msoffice_to_pdf(tmp_path / "a", tmp_path / "a.pdf", app_name)
+    assert getattr(fake_msoffice, OFFICE_DOCUMENTS[app_name]).Open.call_args.kwargs[password]
+
+
+def test_office_document_with_a_password_is_reported(client, fake_soffice):
+    # .docx, .xlsx e .pptx com senha não são ZIP: o pacote vai criptografado num contêiner OLE
+    protected = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + bytes(504) + "EncryptedPackage".encode("utf-16-le")
+    r = post(client, "word-to-pdf", ("contrato.docx", protected))
+    assert r.status_code == 400 and "tem senha" in r.get_data(as_text=True)
+    assert fake_soffice == []  # nem chega ao conversor
 
 
 @pytest.mark.parametrize("app_name", OFFICE_DOCUMENTS)
