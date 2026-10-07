@@ -318,6 +318,13 @@ form.editing #drop, form.editing #file-list, form.editing #page-info { display: 
 .primary:hover:not(:disabled) { background: var(--accent-hover); }
 .primary:disabled { opacity: 0.5; cursor: default; }
 
+#signature-dialog h3 { margin: 0 0 12px; font-size: 1.3rem; }
+#signature-dialog p { margin: 0 0 8px; }
+.dialog-actions { display: flex; gap: 12px; margin-top: 20px; }
+.dialog-actions button { flex: 1; margin-top: 0; padding: 12px; border-radius: 10px; font: inherit; font-weight: 700; cursor: pointer; }
+.secondary { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.secondary:hover { background: var(--bg); }
+
 .primary.busy::before {
     content: "";
     display: inline-block;

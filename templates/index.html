@@ -285,6 +285,19 @@
     </form>
 </dialog>
 
+<dialog id="signature-dialog" aria-labelledby="signature-title">
+    <form method="dialog">
+        <h3 id="signature-title">Este PDF tem assinatura digital</h3>
+        <p>No arquivo gerado a assinatura deixa de valer, mesmo que o selo continue aparecendo na página.
+           Para entregar um documento assinado, assine depois de montá-lo.</p>
+        <p class="muted">O arquivo original não é alterado.</p>
+        <div class="dialog-actions">
+            <button value="cancel" class="secondary" autofocus>Cancelar</button>
+            <button value="download" class="primary">Baixar mesmo assim</button>
+        </div>
+    </form>
+</dialog>
+
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

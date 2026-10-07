@@ -1924,25 +1924,27 @@ def signed_pdf(signed=True, **save_options):
 
 @pytest.mark.parametrize("action, form", [("merge-pdf", {}), ("rotate-pdf", {"angle": "90"}),
                                           ("edit-metadata", {"meta_title": "Novo"}), ("number-pages", {})])
-def test_rewriting_a_signed_pdf_warns_that_the_signature_stops_counting(client, action, form):
+def test_rewriting_a_signed_pdf_flags_that_the_signature_stops_counting(client, action, form):
     """A assinatura digital (a do gov.br, por exemplo) cobre os bytes exatos do arquivo assinado: no
-    PDF gravado de novo ela não vale mais, mesmo que o selo continue aparecendo na página."""
+    PDF gravado de novo ela não vale mais, mesmo que o selo continue aparecendo na página. O servidor
+    só sinaliza (a tela pergunta antes de baixar); o texto do aviso não viaja mais na mensagem."""
     r = post(client, action, ("assinado.pdf", signed_pdf()), **form)
     assert r.status_code == 200
-    assert "assinatura digital" in unquote(r.headers["X-Mensagem"])
+    assert r.headers["X-Assinatura"] == "perdida"
+    assert "assinatura" not in unquote(r.headers.get("X-Mensagem", ""))
 
 
 def test_no_signature_warning_without_a_signature(client):
     for pdf in (make_pdf(), signed_pdf(signed=False)):  # campo de assinatura vazio: o documento não foi assinado
-        assert "assinatura" not in unquote(post(client, "merge-pdf", ("a.pdf", pdf)).headers.get("X-Mensagem", ""))
+        assert "X-Assinatura" not in post(client, "merge-pdf", ("a.pdf", pdf)).headers
 
 
 def test_no_signature_warning_when_the_pdf_is_not_rewritten(client):
-    assert "X-Mensagem" not in post(client, "pdf-to-jpg", ("assinado.pdf", signed_pdf())).headers  # não é PDF
+    assert "X-Assinatura" not in post(client, "pdf-to-jpg", ("assinado.pdf", signed_pdf())).headers  # não é PDF
     # Já otimizado: o Comprimir devolve o próprio arquivo, e a assinatura continua valendo
     optimized = signed_pdf(garbage=4, deflate=True, clean=True, use_objstms=1)
     r = post(client, "compress-pdf", ("assinado.pdf", optimized))
-    assert r.data == optimized and "assinatura" not in unquote(r.headers["X-Mensagem"])
+    assert r.data == optimized and "X-Assinatura" not in r.headers
 
 
 # --- Validação ---

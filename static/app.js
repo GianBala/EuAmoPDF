@@ -267,7 +267,16 @@ form.addEventListener('submit', async (event) => {
             setStatus(await response.text(), 'error');
             return;
         }
-        download(await response.blob(), fileName(response));
+        const blob = await response.blob();
+        if (response.headers.get('X-Assinatura') === 'perdida') {
+            setBusy(false);  // o arquivo está pronto; quem decide agora é o usuário
+            if (!(await confirmSignatureLoss())) {
+                setStatus('Download cancelado. Nada foi salvo.', '');
+                return;
+            }
+            setBusy(true);
+        }
+        download(blob, fileName(response));
         const message = response.headers.get('X-Mensagem');
         setStatus(`Pronto! O arquivo foi baixado.${message ? ` ${decodeURIComponent(message)}` : ''}`, 'ok');
     } catch {
@@ -576,6 +585,15 @@ function fileName(response) {
     if (utf8) return decodeURIComponent(utf8[1]);
     const plain = header.match(/filename="?([^";]+)"?/i);
     return plain ? plain[1] : 'resultado';
+}
+
+function confirmSignatureLoss() {
+    const question = $('signature-dialog');
+    return new Promise((resolve) => {
+        question.returnValue = '';  // o Esc fecha sem valor, e o diálogo guardaria a resposta da vez anterior
+        question.addEventListener('close', () => resolve(question.returnValue === 'download'), { once: true });
+        question.showModal();
+    });
 }
 
 function download(blob, name) {

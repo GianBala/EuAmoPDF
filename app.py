@@ -2288,8 +2288,6 @@ def unexpected_error(e):
 # Ferramentas que gravam um PDF novo a partir do enviado
 REWRITES_PDF = {'merge-pdf', 'split-pdf', 'organize-pdf', 'rotate-pdf', 'compress-pdf', 'ocr-pdf', 'watermark-pdf',
                 'number-pages', 'edit-metadata', 'protect-pdf', 'unlock-pdf'}
-SIGNED_WARNING = ("O PDF enviado tem assinatura digital (como a do gov.br): no arquivo gerado ela não vale mais, "
-                  "mesmo que o selo continue aparecendo. Para entregar um documento assinado, assine depois de montá-lo.")
 
 
 def signed(path, password=''):
@@ -2326,16 +2324,19 @@ def handle_conversion():
     def work(saved, tmp):
         data, download_name, *message = ACTIONS[action][0](saved, request.form, tmp)
         # A assinatura digital cobre os bytes exatos do arquivo assinado: o PDF gravado de novo não a
-        # tem mais válida, e o selo que continua na página engana quem recebe
-        if action in REWRITES_PDF and any(path.suffix == '.pdf' and data != path.read_bytes()
-                                          and signed(path, request.form.get('password', '')) for path, _ in saved):
-            message = [' '.join(message + [SIGNED_WARNING])]
-        return data, download_name, *message
+        # tem mais válida, e o selo que continua na página engana quem recebe. Só o resultado diz se
+        # difere do original (o Comprimir de um arquivo já otimizado o devolve igual), e por isso a
+        # pergunta vem depois de processar: a tela segura o arquivo pronto até o usuário decidir
+        lost = action in REWRITES_PDF and any(path.suffix == '.pdf' and data != path.read_bytes()
+                                              and signed(path, request.form.get('password', '')) for path, _ in saved)
+        return data, download_name, lost, *message
 
-    data, download_name, *message = process_uploads(action, work)
+    data, download_name, signature_lost, *message = process_uploads(action, work)
     response = send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
     if message:  # cabeçalhos HTTP só aceitam ASCII
         response.headers['X-Mensagem'] = quote(message[0])
+    if signature_lost:
+        response.headers['X-Assinatura'] = 'perdida'
     return response
 
 def png_response(img):
