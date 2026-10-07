@@ -2097,6 +2097,19 @@ def estimate_size():
     before, after = process_uploads(action, lambda saved, tmp: ESTIMATORS[action](saved, request.form))
     return {'antes': before, 'depois': round(after)}
 
+def remove_leftovers(max_age=86400):
+    """Apaga as pastas de conversão que ficaram no temporário: fechar o terminal ou o app cair no
+    meio de uma conversão não passa pela limpeza, e o documento ficava lá (no Windows, ninguém limpa).
+    Só as de mais de um dia: as recentes podem ser de outra janela do app aberta."""
+    limit = time.time() - max_age
+    for folder in Path(tempfile.gettempdir()).glob('euamopdf-*'):
+        try:
+            if folder.is_dir() and folder.stat().st_mtime < limit:
+                shutil.rmtree(folder, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def free_port(preferred=5000):
     """Usa a porta preferida se estiver livre; senão, qualquer porta livre."""
     with socket.socket() as s:
@@ -2114,6 +2127,7 @@ if __name__ == '__main__':
             os.environ['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH_ORIG']
         else:
             os.environ.pop('LD_LIBRARY_PATH', None)
+    remove_leftovers()
     port = free_port()
     print("O EuAmoPDF vive neste terminal: para encerrar, feche-o ou aperte Ctrl+C.")
     # O Timer aguarda 1 segundo para garantir que o servidor Flask já subiu

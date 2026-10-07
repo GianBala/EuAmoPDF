@@ -1883,6 +1883,24 @@ def test_no_upload_stays_open_when_the_temp_folder_is_deleted(client, monkeypatc
     assert left_open == []
 
 
+def test_old_conversion_folders_are_removed_at_startup(tmp_path, monkeypatch):
+    """Fechar o terminal ou o app cair no meio de uma conversão deixava a pasta dela, com o documento,
+    no temporário, que no Windows ninguém limpa."""
+    import os
+    import time
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    old, recent, other = tmp_path / "euamopdf-antiga", tmp_path / "euamopdf-recente", tmp_path / "outro-programa"
+    for folder in (old, recent, other):
+        folder.mkdir()
+        (folder / "entrada0.pdf").write_bytes(b"%PDF")
+    two_days_ago = time.time() - 2 * 86400
+    for folder in (old, other):
+        os.utime(folder, (two_days_ago, two_days_ago))
+    euamopdf.remove_leftovers()
+    assert not old.exists()
+    assert recent.exists() and other.exists()  # a recente pode ser de outra janela do app aberta
+
+
 def test_same_file_name_never_returns_previous_result(client):
     first = post(client, "split-pdf", ("mesmo.pdf", make_pdf(3)))
     second = post(client, "split-pdf", ("mesmo.pdf", make_pdf(2)))
