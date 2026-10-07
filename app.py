@@ -580,21 +580,21 @@ def sheet_cell(ws, text):
 
 
 def table_rows(doc):
-    """[(página, linhas de cada tabela)] e se as tabelas vieram sem linhas desenhadas. Extratos de banco
+    """[(página, [(linhas, retângulo) de cada tabela])] e se as tabelas vieram sem linhas desenhadas. Extratos de banco
     só alinham as colunas: quando nenhuma página tem tabela com linhas, a busca é pelo alinhamento do
     texto, que também pega título e rodapé (e pode tomar texto corrido por tabela). Por isso ela só
     entra quando a outra não acha nada, e sem as linhas e colunas vazias que ela cria."""
-    found = [(page, [t.extract() for t in page.find_tables().tables]) for page in doc]
+    found = [(page, [(t.extract(), t.bbox) for t in page.find_tables().tables]) for page in doc]
     if any(tables for _, tables in found):
         return found, False
     found = []
     for page in doc:
         tables = []
-        for rows in (t.extract() for t in page.find_tables(strategy='text').tables):
-            rows = [row for row in rows if any(cell and cell.strip() for cell in row)]
+        for table in page.find_tables(strategy='text').tables:
+            rows = [row for row in table.extract() if any(cell and cell.strip() for cell in row)]
             keep = [i for i in range(len(rows[0]) if rows else 0) if any(row[i] and row[i].strip() for row in rows)]
             if len(rows) >= 2 and len(keep) >= 2:
-                tables.append([[row[i] for i in keep] for row in rows])
+                tables.append(([[row[i] for i in keep] for row in rows], table.bbox))
         found.append((page, tables))
     return found, True
 
@@ -606,11 +606,23 @@ def pdf_to_excel(files, form, tmp):
     wb = Workbook()
     wb.remove(wb.active)
     pages, borderless = table_rows(doc)
+    last = None  # a última tabela da página anterior: (aba, cabeçalho, se termina embaixo)
     for page, tables in pages:
-        for n, rows in enumerate(tables, 1):
-            ws = wb.create_sheet(f"Pág {page.number + 1} - Tabela {n}")
+        height = page.rect.height
+        for n, (rows, bbox) in enumerate(tables, 1):
+            # Tabela que passa para a página seguinte: a primeira desta, no alto, com as mesmas colunas
+            # da anterior, que terminou embaixo, entra na mesma aba, sem repetir o cabeçalho
+            if n == 1 and last and last[2] and bbox[1] < 0.4 * height and len(rows[0]) == len(last[1]):
+                ws, header = last[0], last[1]
+                rows = rows[1:] if rows[0] == header else rows
+            else:
+                ws, header = wb.create_sheet(f"Pág {page.number + 1} - Tabela {n}"), rows[0]
             for row in rows:
                 ws.append([sheet_cell(ws, cell) for cell in row])
+            if n == len(tables):
+                last = (ws, header, bbox[3] > 0.6 * height)
+        if not tables:
+            last = None
     if not wb.sheetnames:
         scanned = not any(page.get_text().strip() for page in doc)
         raise UserError("Nenhuma tabela encontrada neste PDF." + (" Ele parece escaneado: passe o OCR antes." if scanned else ""))

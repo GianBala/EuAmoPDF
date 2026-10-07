@@ -1287,6 +1287,38 @@ def test_pdf_to_excel_extracts_tables(client):
     assert [[cell.value for cell in row] for row in sheet.iter_rows()] == [["Produto", "Preço"], ["Café", 12.5], ["Pão", 0.75]]
 
 
+def draw_table(page, rows, top):
+    for r, row in enumerate(rows):
+        for c, value in enumerate(row):
+            cell = pymupdf.Rect(72 + c * 150, top + r * 22, 222 + c * 150, top + 22 + r * 22)
+            page.draw_rect(cell, color=(0, 0, 0), width=0.5)
+            page.insert_text(cell.bl + (4, -7), value, fontsize=9)
+
+
+def test_pdf_to_excel_joins_a_table_that_continues_on_the_next_page(client):
+    """Uma tabela longa, que passa para a página seguinte repetindo o cabeçalho, virava uma aba por
+    página."""
+    openpyxl = pytest.importorskip("openpyxl")
+    doc = pymupdf.open()
+    for p in range(2):
+        draw_table(doc.new_page(), [["Item", "Quantidade"]] + [[f"Item {p * 30 + i + 1}", "1"] for i in range(30)], 60)
+    wb = openpyxl.load_workbook(io.BytesIO(post(client, "pdf-to-excel", ("longa.pdf", doc.tobytes())).data))
+    assert len(wb.worksheets) == 1
+    values = [row for row in wb.worksheets[0].iter_rows(values_only=True)]
+    assert values[0] == ("Item", "Quantidade") and len(values) == 61 and values[-1] == ("Item 60", "1")
+
+
+def test_pdf_to_excel_keeps_different_tables_apart(client):
+    openpyxl = pytest.importorskip("openpyxl")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    draw_table(page, [["Produto", "Preço"], ["Café", "12,50"]], 60)
+    draw_table(page, [["Cidade", "Estado"], ["Recife", "PE"]], 400)
+    draw_table(doc.new_page(), [["Nome", "Idade"], ["Ana", "30"]], 600)  # nem no alto da página seguinte
+    wb = openpyxl.load_workbook(io.BytesIO(post(client, "pdf-to-excel", ("tabelas.pdf", doc.tobytes())).data))
+    assert len(wb.worksheets) == 3
+
+
 def test_pdf_to_excel_finds_tables_without_borders(client):
     """Extratos de banco alinham as colunas sem desenhar linhas: a busca por linhas não achava nada, e
     a mensagem mandava passar OCR num PDF que já tem texto."""
