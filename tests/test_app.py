@@ -1388,6 +1388,32 @@ def test_libreoffice_failures_are_reported(client, fake_soffice, monkeypatch, ru
     assert r.status_code == 400 and message in r.get_data(as_text=True)
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-8", "cp1252"])
+@pytest.mark.parametrize("separator", [";", ","])
+def test_csv_goes_to_the_converter_as_a_spreadsheet(client, fake_soffice, monkeypatch, encoding, separator):
+    """O Excel em português grava CSV com ponto e vírgula, vírgula decimal e em Windows-1252; o
+    LibreOffice e o Excel por automação o liam com vírgula, e a tabela saía numa coluna só."""
+    openpyxl = pytest.importorskip("openpyxl")
+    sheets = []
+    monkeypatch.setattr(euamopdf.subprocess, "run", lambda args, **kwargs: sheets.append(openpyxl.load_workbook(args[-1]).active))
+    value = "1.234,56" if separator == ";" else '"1.234,56"'
+    csv = f"Nome{separator}Cidade{separator}Valor\nJoão{separator}São Paulo{separator}{value}\n"
+    post(client, "excel-to-pdf", ("Relatório de vendas.csv", csv.encode(encoding)))
+    sheet, = sheets
+    assert sheet.title == "Relatório de vendas"  # o LibreOffice o imprime no cabeçalho da página
+    assert [[cell.value for cell in row] for row in sheet.iter_rows()] == [
+        ["Nome", "Cidade", "Valor"], ["João", "São Paulo", "1.234,56"]]
+
+
+@needs_libreoffice
+def test_brazilian_csv_to_pdf(client):
+    csv = "Nome;Cidade;Valor\nJoão;São Paulo;1.234,56\n".encode("cp1252")
+    r = post(client, "excel-to-pdf", ("vendas.csv", csv))
+    words = [w[4] for w in pymupdf.open(stream=r.data)[0].get_text("words")]
+    assert "1.234,56" in words and "João" in words
+    assert not any(";" in word for word in words)
+
+
 def test_libreoffice_is_found_in_program_files_on_windows(monkeypatch, tmp_path):
     exe = tmp_path / "LibreOffice" / "program" / "soffice.exe"
     exe.parent.mkdir(parents=True)

@@ -217,9 +217,37 @@ def split_pdf(files, form, tmp):
     return buf.getvalue(), f"{base}_dividido.zip"
 
 
+def csv_to_xlsx(path, tmp, title):
+    """Planilha a partir do CSV. O Office e o LibreOffice leem CSV com vírgula, e o do Excel em
+    português (ponto e vírgula, vírgula decimal, Windows-1252) saía numa coluna só, com os centavos
+    numa coluna à parte e sem os acentos."""
+    import csv
+    from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    raw = path.read_bytes()
+    try:
+        text = raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = raw.decode('cp1252', errors='replace')
+    try:
+        dialect = csv.Sniffer().sniff(text[:65536], delimiters=',;\t')
+    except csv.Error:  # uma coluna só, ou não deu para decidir
+        dialect = csv.excel
+    wb = Workbook()
+    ws = wb.active
+    ws.title = re.sub(r'[\\*?:/\[\]]', '', title)[:31] or 'Planilha'  # o nome que vai no cabeçalho
+    for row in csv.reader(io.StringIO(text), dialect):
+        ws.append([ILLEGAL_CHARACTERS_RE.sub('', cell) for cell in row])
+    out = tmp / 'planilha.xlsx'
+    wb.save(out)
+    return out
+
+
 def office_action(app_name):
     def convert(files, form, tmp):
         path, base = files[0]
+        if path.suffix == '.csv':
+            path = csv_to_xlsx(path, tmp, base)
         return office_to_pdf(path, tmp, app_name).read_bytes(), f"{base}.pdf"
     return convert
 
