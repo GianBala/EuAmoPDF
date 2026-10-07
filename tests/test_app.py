@@ -1349,6 +1349,83 @@ def test_word_to_pdf(client):
     assert "Olá, documento" in texts(r.data)[0]
 
 
+def tracked_changes_docx():
+    """.docx com alterações controladas pendentes, como o de um contrato em negociação."""
+    docx = pytest.importorskip("docx")
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def change(kind, text):
+        element = OxmlElement(f"w:{kind}")
+        element.set(qn("w:id"), str(len(text)))
+        element.set(qn("w:author"), "Revisor")
+        run, t = OxmlElement("w:r"), OxmlElement("w:delText" if kind == "del" else "w:t")
+        t.text = text
+        t.set(qn("xml:space"), "preserve")
+        run.append(t)
+        element.append(run)
+        return element
+
+    document = docx.Document()
+    value = document.add_paragraph("Valor do contrato: ")
+    value._p.append(change("del", "R$ 9.000 (VALOR ANTIGO)"))
+    value._p.append(change("ins", "R$ 10.000 (VALOR NOVO)"))
+    gone = document.add_paragraph()  # parágrafo inteiro excluído, com a marca de parágrafo
+    gone._p.append(change("del", "CLÁUSULA EXCLUÍDA"))
+    deleted_mark, mark = OxmlElement("w:del"), OxmlElement("w:rPr")
+    deleted_mark.set(qn("w:id"), "99")
+    deleted_mark.set(qn("w:author"), "Revisor")
+    mark.append(deleted_mark)
+    gone._p.get_or_add_pPr().append(mark)
+    commented = document.add_paragraph("Parágrafo com comentário.")
+    if hasattr(document, "add_comment"):  # python-docx 1.2 em diante
+        document.add_comment(commented.runs[0], text="COMENTÁRIO DO REVISOR", author="Revisor")
+    buf = io.BytesIO()
+    document.save(buf)
+    return buf.getvalue()
+
+
+def test_tracked_changes_are_accepted_before_libreoffice(tmp_path):
+    """O LibreOffice imprimia o texto excluído riscado ao lado do inserido; o iLovePDF, que converte
+    pelo Word, mostra a versão final."""
+    docx = pytest.importorskip("docx")
+    src = tmp_path / "contrato.docx"
+    src.write_bytes(tracked_changes_docx())
+    out = euamopdf.accept_changes(src, tmp_path)
+    texts = [p.text for p in docx.Document(out).paragraphs]
+    assert texts == ["Valor do contrato: R$ 10.000 (VALOR NOVO)", "Parágrafo com comentário."]
+    assert b"w:del" not in unzip(out.read_bytes())["word/document.xml"]
+
+
+def test_docx_without_tracked_changes_goes_unchanged(tmp_path):
+    docx = pytest.importorskip("docx")
+    document = docx.Document()
+    document.add_paragraph("Sem alterações")
+    src = tmp_path / "carta.docx"
+    document.save(src)
+    assert euamopdf.accept_changes(src, tmp_path) == src
+
+
+@needs_libreoffice
+def test_word_to_pdf_shows_the_final_version(client):
+    r = post(client, "word-to-pdf", ("contrato.docx", tracked_changes_docx()))
+    pdf = pymupdf.open(stream=r.data)
+    text = pdf[0].get_text()
+    assert "VALOR NOVO" in text
+    assert "VALOR ANTIGO" not in text and "EXCLUÍDA" not in text and "COMENTÁRIO" not in text
+    assert not pdf[0].get_drawings()  # sem a barra de alteração na margem
+
+
+def test_microsoft_word_accepts_the_changes_before_saving(fake_msoffice, tmp_path):
+    document = fake_msoffice.Documents.Open.return_value
+    order = []
+    document.Revisions.AcceptAll.side_effect = lambda: order.append("aceita")
+    document.DeleteAllComments.side_effect = lambda: order.append("apaga comentários")
+    document.SaveAs.side_effect = lambda *args, **kwargs: order.append("salva o PDF")
+    euamopdf.msoffice_to_pdf(tmp_path / "a.docx", tmp_path / "a.pdf", "Word.Application")
+    assert order == ["aceita", "apaga comentários", "salva o PDF"]  # só no documento aberto, que não é salvo
+
+
 @needs_libreoffice
 def test_corrupted_office_file_is_reported(client):
     r = post(client, "word-to-pdf", ("quebrado.docx", b"PK\x03\x04lixo"))
