@@ -1568,7 +1568,7 @@ def fake_soffice(monkeypatch):
     calls = []
     monkeypatch.setattr(euamopdf, "find_soffice", lambda: "soffice")
     monkeypatch.setattr(euamopdf, "msoffice_to_pdf", mock.Mock(side_effect=OSError("sem Office")))  # no Windows
-    monkeypatch.setattr(euamopdf.subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(euamopdf, "run_soffice", lambda args, timeout: calls.append((args, {"timeout": timeout})))
     return calls
 
 
@@ -1584,13 +1584,27 @@ def test_libreoffice_runs_with_its_own_profile_and_a_time_limit(client, fake_sof
 
 
 @pytest.mark.parametrize("run, message", [
-    (lambda args, **kwargs: None, "não conseguiu converter"),  # sai sem erro e sem PDF
+    (lambda args, timeout: None, "não conseguiu converter"),  # sai sem erro e sem PDF
     (mock.Mock(side_effect=subprocess.TimeoutExpired("soffice", 180)), "demorou demais"),
 ])
 def test_libreoffice_failures_are_reported(client, fake_soffice, monkeypatch, run, message):
-    monkeypatch.setattr(euamopdf.subprocess, "run", run)
+    monkeypatch.setattr(euamopdf, "run_soffice", run)
     r = post(client, "word-to-pdf", ("a.docx", b"PK"))
     assert r.status_code == 400 and message in r.get_data(as_text=True)
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="usa o /proc do Linux para ver os processos")
+def test_libreoffice_timeout_kills_every_process_it_started(tmp_path):
+    """O soffice só lança o soffice.bin, que é quem converte: o timeout matava só o primeiro, e um
+    documento que trava deixava o LibreOffice rodando para sempre."""
+    grandchild = tmp_path / "neto.pid"
+    soffice = tmp_path / "soffice"
+    soffice.write_text(f"#!/bin/sh\nsleep 60 &\necho $! > {grandchild}\nwait\n")
+    soffice.chmod(0o755)
+    with pytest.raises(subprocess.TimeoutExpired):
+        euamopdf.run_soffice([str(soffice)], timeout=1)
+    stat = Path(f"/proc/{grandchild.read_text().strip()}/stat")
+    assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"  # morto (ou zumbi, à espera do init)
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-8", "cp1252"])
@@ -1600,7 +1614,7 @@ def test_csv_goes_to_the_converter_as_a_spreadsheet(client, fake_soffice, monkey
     LibreOffice e o Excel por automação o liam com vírgula, e a tabela saía numa coluna só."""
     openpyxl = pytest.importorskip("openpyxl")
     sheets = []
-    monkeypatch.setattr(euamopdf.subprocess, "run", lambda args, **kwargs: sheets.append(openpyxl.load_workbook(args[-1]).active))
+    monkeypatch.setattr(euamopdf, "run_soffice", lambda args, timeout: sheets.append(openpyxl.load_workbook(args[-1]).active))
     value = "1.234,56" if separator == ";" else '"1.234,56"'
     csv = f"Nome{separator}Cidade{separator}Valor\nJoão{separator}São Paulo{separator}{value}\n"
     post(client, "excel-to-pdf", ("Relatório de vendas.csv", csv.encode(encoding)))
