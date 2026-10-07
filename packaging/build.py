@@ -12,6 +12,7 @@ alguns documentos: se faltar um módulo ou um arquivo embutido, o build falha aq
 """
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -74,8 +75,8 @@ def download(url, path, digest):
 
 
 def pyinstaller(dist, mode, tessdata, model):
-    """O modelo, os idiomas do OCR e a interface vão para dentro; o app os acha por app.bundled()."""
-    data = [(ROOT / 'templates', 'templates'), (ROOT / 'static', 'static'), (tessdata, 'tessdata'), (model, '.')]
+    """O modelo, os idiomas do OCR, a cadeia do gov.br e a interface vão para dentro; o app os acha por app.bundled()."""
+    data = [(ROOT / 'templates', 'templates'), (ROOT / 'static', 'static'), (ROOT / 'certs', 'certs'), (tessdata, 'tessdata'), (model, '.')]
     cmd = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--name', 'EuAmoPDF', mode,
            '--distpath', str(dist), '--workpath', str(BUILD / 'pyinstaller'), '--specpath', str(BUILD)]
     if WINDOWS:
@@ -101,8 +102,13 @@ def build_appimage(tessdata, model):
     out = DIST / 'EuAmoPDF.AppImage'
     # EXTRACT_AND_RUN: roda a ferramenta (que também é um AppImage) sem precisar do FUSE; sem o
     # --runtime-file, ela baixaria a versão do dia do runtime
-    subprocess.run([tool, '--no-appstream', '--runtime-file', runtime, appdir, out], check=True,
+    # Grava ao lado e troca o nome no fim: o Linux não deixa regravar um AppImage aberto ("Text file busy"), e o
+    # build falhava só nesta última etapa, depois do teste de fumaça, deixando em dist/ o arquivo antigo
+    partial = out.with_name(out.name + '.part')
+    partial.unlink(missing_ok=True)
+    subprocess.run([tool, '--no-appstream', '--runtime-file', runtime, appdir, partial], check=True,
                    env=os.environ | {'ARCH': 'x86_64', 'APPIMAGE_EXTRACT_AND_RUN': '1'})
+    partial.replace(out)
     return out
 
 
@@ -113,12 +119,12 @@ def build_exe(tessdata, model):
     return out
 
 
-def post(base, action, filename, data):
+def post(base, action, filename, data, path='/convert'):
     boundary = uuid.uuid4().hex
     parts = [('action', '', action.encode()), ('file', f'; filename="{filename}"', data)]
     body = b''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"{extra}\r\n\r\n'.encode()
                     + value + b'\r\n' for name, extra, value in parts) + f'--{boundary}--\r\n'.encode()
-    request = urllib.request.Request(f'{base}/convert', body, {'Content-Type': f'multipart/form-data; boundary={boundary}'})
+    request = urllib.request.Request(f'{base}{path}', body, {'Content-Type': f'multipart/form-data; boundary={boundary}'})
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
             return response.read()
@@ -144,6 +150,16 @@ def check_tools(base):
     ocr = post(base, 'ocr-pdf', 'a.pdf', scan.tobytes())
     assert 'mundo' in pymupdf.open(stream=ocr)[0].get_text(), 'OCR: idiomas do Tesseract não embutidos'
     assert post(base, 'remove-background', 'a.png', png.getvalue())[:4] == b'\x89PNG', 'remover fundo (modelo)'
+
+    # Validar assinatura: sem assinatura a resposta sai vazia (só carrega o pyHanko e a cadeia do gov.br embutida);
+    # com uma de AC de teste o conteúdo confere e o certificado não é reconhecido, o que passa por todo o caminho
+    # da validação (CMS, cadeia, uso da chave) dentro do executável
+    sys.path.insert(0, str(ROOT / 'tests'))
+    import pki
+    check = lambda pdf: json.loads(post(base, 'verify-signature', 'a.pdf', pdf, path='/signatures'))['assinaturas']  # noqa: E731
+    assert check(text_pdf) == [], 'validar assinatura (pyHanko ou cadeia do gov.br não embutidos)'
+    [signature] = check(pki.sign_pdf(pki.issue_person(pki.new_authority('AC de fumaça')), text_pdf))
+    assert signature['itens'][0]['ok'] is True and not signature['confirmado'], 'validar assinatura (pyHanko no executável)'
 
 
 def smoke_test(cmd):
