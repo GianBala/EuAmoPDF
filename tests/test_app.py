@@ -1603,8 +1603,11 @@ def test_libreoffice_timeout_kills_every_process_it_started(tmp_path):
     soffice.chmod(0o755)
     with pytest.raises(subprocess.TimeoutExpired):
         euamopdf.run_soffice([str(soffice)], timeout=1)
-    stat = Path(f"/proc/{grandchild.read_text().strip()}/stat")
-    assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"  # morto (ou zumbi, à espera do init)
+    try:
+        state = Path(f"/proc/{grandchild.read_text().strip()}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):  # sumiu antes ou durante a leitura
+        state = "morto"
+    assert state in ("morto", "Z", "X")  # Z e X: morto, sendo recolhido
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-8", "cp1252"])
