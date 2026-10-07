@@ -42,6 +42,13 @@ jobs:
         run: python -c "import app; p = app.bg_model_path(); p.exists() or app.download_bg_model(p)"
       - run: pytest -v
 
+  ruff:
+    # Erros simples (nome indefinido, import sem uso...) antes de rodar os testes; regras em ruff.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - run: pipx run ruff==0.16.10 check .
+
   minimas:
     # O requirements.txt aceita versões antigas e o README promete Python 3.10: a data da foto se
     # perdia no Pillow 10 e só aparecia assim
