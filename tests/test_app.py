@@ -1157,6 +1157,28 @@ def test_pdf_to_word(client):
     assert b"Pagina 2" in unzip(r.data)["word/document.xml"]
 
 
+def test_pdf_to_word_keeps_the_table_column_widths(client):
+    """O pdf2docx grava a largura certa em cada célula, mas a grade da tabela com as colunas iguais, e
+    os editores desenham pela grade: a coluna estreitada quebrava o texto, e a altura exata o cortava."""
+    docx = pytest.importorskip("docx")
+    from docx.oxml.ns import qn
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for r in range(3):
+        x = 72
+        for c, width in enumerate((40, 260, 90)):
+            cell = pymupdf.Rect(x, 72 + r * 24, x + width, 96 + r * 24)
+            page.draw_rect(cell, color=(0, 0, 0), width=0.5)
+            page.insert_text(cell.bl + (4, -7), f"L{r}C{c}")
+            x += width
+    r = post(client, "pdf-to-word", ("tabela.pdf", doc.tobytes()))
+    table = docx.Document(io.BytesIO(r.data)).tables[0]._tbl
+    grid = [col.get(qn("w:w")) for col in table.tblGrid.findall(qn("w:gridCol"))]
+    cells = [tc.tcPr.find(qn("w:tcW")).get(qn("w:w")) for tc in table.findall(qn("w:tr"))[0].findall(qn("w:tc"))]
+    assert len(set(cells)) == 3  # as três larguras do PDF
+    assert grid == cells
+
+
 def make_table_pdf(rows):
     """PDF com uma tabela de bordas desenhadas, como as geradas por planilhas."""
     doc = pymupdf.open()
