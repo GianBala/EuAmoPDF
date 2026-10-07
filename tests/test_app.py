@@ -1210,6 +1210,57 @@ def test_pdf_to_word(client):
     assert b"Pagina 2" in unzip(r.data)["word/document.xml"]
 
 
+def test_pdf_to_word_puts_side_by_side_tables_back_side_by_side(tmp_path):
+    """Na nova tentativa (sem a detecção de tabelas sem bordas do pdf2docx), as caixas que no PDF ficam
+    lado a lado (Data de Nascimento, Identidade, CPF, Sexo) saíam uma embaixo da outra, em escada."""
+    docx = pytest.importorskip("docx")
+    from docx.oxml.ns import qn
+    document = docx.Document()
+    document.add_paragraph("Ficha")
+    labels = ["Data de Nascimento", "Identidade", "CPF", "Sexo", "Endereço"]
+    for label in labels:
+        document.add_table(rows=1, cols=1).cell(0, 0).text = label
+        document.add_paragraph()  # o pdf2docx separa as tabelas com um parágrafo vazio
+    path = tmp_path / "ficha.docx"
+    document.save(path)
+    blocks = [(0, "TextBlock", (214, 25, 379, 43))] + [(0, "TableBlock", box) for box in (
+        (66, 162, 170, 199), (176, 162, 317, 199), (324, 162, 464, 199), (470, 162, 529, 199),
+        (66, 206, 529, 243))]  # o Endereço fica embaixo, sozinho
+    euamopdf.fix_docx(path, blocks=blocks)
+    body = docx.Document(path).element.body
+    top = body.findall(qn("w:tbl"))
+    assert len(top) == 2  # a linha das quatro caixas e o Endereço
+    row = top[0].findall(qn("w:tr"))
+    assert len(row) == 1
+    inner = [" ".join(t.text for t in tbl.iter(qn("w:t"))) for tbl in row[0].iter(qn("w:tbl"))]
+    assert inner == labels[:4]
+    assert " ".join(t.text for t in top[1].iter(qn("w:t"))) == "Endereço"
+
+
+def test_pdf_to_word_puts_a_table_beside_text_where_it_was(tmp_path):
+    """Uma tabela ao lado de texto (a caixa "Inscrição Nº" ao lado do título da ficha) saía embaixo
+    dele, empurrando a página para baixo. Ela vai para uma caixa de texto na posição do PDF, e o
+    título continua centralizado na página."""
+    docx = pytest.importorskip("docx")
+    from docx.oxml.ns import qn
+    document = docx.Document()
+    document.add_paragraph("ESCOLINHA DE AIRBADMINTON")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "Inscrição Nº"
+    document.add_paragraph()
+    document.add_paragraph("ARENA CABO BRANCO")
+    path = tmp_path / "ficha.docx"
+    document.save(path)
+    blocks = [(0, "TextBlock", (62, 32, 405, 74)), (0, "TableBlock", (430, 31, 529, 68)), (0, "TextBlock", (223, 74, 368, 89))]
+    euamopdf.fix_docx(path, blocks=blocks)
+    body = docx.Document(path).element.body
+    assert body.findall(qn("w:tbl")) == []
+    anchor = body.find(f"{qn('w:p')}//{qn('wp:anchor')}")
+    assert anchor is not None and anchor.getparent().getparent().getparent() is body.findall(qn("w:p"))[0]  # drawing > r > p
+    assert anchor.find(f"{qn('wp:positionH')}/{qn('wp:posOffset')}").text == str(430 * 12700)
+    assert "Inscrição Nº" in "".join(t.text for t in anchor.iter(qn("w:t")))
+    assert [p.text for p in docx.Document(path).paragraphs if p.text] == ["ESCOLINHA DE AIRBADMINTON", "ARENA CABO BRANCO"]
+
+
 def test_pdf_to_word_keeps_the_table_column_widths(client):
     """O pdf2docx grava a largura certa em cada célula, mas a grade da tabela com as colunas iguais, e
     os editores desenham pela grade: a coluna estreitada quebrava o texto, e a altura exata o cortava."""
