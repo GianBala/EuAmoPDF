@@ -1091,6 +1091,38 @@ def test_image_location_is_removed_from_exif_and_xmp(client, fmt, ext):
     assert image_metadata(client, r.data, f"f.{ext}")["localizacao"] == ""
 
 
+def photo_with_something_after_it():
+    """Foto com outra imagem grudada depois do fim, com a localização dela: é o que guardam as fotos em
+    movimento (um vídeo), o MPO de alguns celulares e o trailer das fotos da Samsung."""
+    extra = make_photo((40, 30), exif=exif_with_location())
+    return make_photo((200, 150)) + extra, extra
+
+
+@pytest.mark.parametrize("form", [{"img_strip_gps": "1"}, {"meta_strip": "1"}])
+def test_removing_the_location_drops_what_comes_after_the_jpeg(client, form):
+    photo, extra = photo_with_something_after_it()
+    r = post(client, "edit-metadata", ("foto.jpg", photo), **form)
+    assert extra not in r.data
+    assert same_pixels(r.data, photo)
+    assert "depois da foto" in unquote(r.headers["X-Mensagem"])
+
+
+@pytest.mark.parametrize("options", [{}, {"progressive": True}, {"restart_marker_rows": 1}])
+def test_the_end_of_the_jpeg_is_found_exactly(options):
+    """O JPEG progressivo tem várias varreduras e segmentos no meio, e os marcadores RST ficam dentro
+    dos dados: cortar antes do fim estragaria a foto."""
+    buf = io.BytesIO()
+    opened(make_photo((400, 300))).save(buf, "JPEG", quality=90, **options)
+    jpeg = buf.getvalue()
+    assert euamopdf.jpeg_image_end(jpeg + b"depois", jpeg.index(b"\xff\xda")) == len(jpeg)
+
+
+def test_editing_the_title_keeps_what_comes_after_the_jpeg(client):
+    photo, extra = photo_with_something_after_it()
+    r = post(client, "edit-metadata", ("foto.jpg", photo), img_title="Praia")
+    assert r.data.endswith(extra)
+
+
 @pytest.mark.parametrize("fmt, ext", [("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp")])
 def test_remove_all_image_metadata_keeps_orientation(client, fmt, ext):
     src = phone_photo(fmt)

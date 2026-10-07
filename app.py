@@ -1238,8 +1238,27 @@ def jpeg_segment(marker, payload):
     return bytes((0xFF, marker)) + (len(payload) + 2).to_bytes(2, 'big') + payload
 
 
-def rewrite_jpeg(data, tiff, xmp, values, strip):
-    """Troca os segmentos de EXIF e XMP e atualiza o IPTC; os dados da imagem (a partir do SOS) ficam iguais."""
+def jpeg_image_end(data, pos):
+    """Onde termina a imagem principal (logo depois do EOI), a partir do SOS em pos. Nos dados da
+    imagem, 0xFF só é marcador se não vier seguido de 0x00 ou de um RST; os segmentos entre as
+    varreduras de um JPEG progressivo têm tamanho e são pulados inteiros. Sem EOI, vai até o fim."""
+    while pos + 4 <= len(data):
+        pos += 2 + int.from_bytes(data[pos + 2:pos + 4], 'big')  # o cabeçalho do segmento
+        while (pos := data.find(b'\xff', pos)) >= 0 and pos + 1 < len(data) and \
+                (data[pos + 1] in (0x00, 0xFF) or 0xD0 <= data[pos + 1] <= 0xD7):
+            pos += 1
+        if pos < 0 or pos + 1 >= len(data):
+            break
+        if data[pos + 1] == 0xD9:
+            return pos + 2
+    return len(data)
+
+
+def rewrite_jpeg(data, tiff, xmp, values, strip, drop_extra=False):
+    """Troca os segmentos de EXIF e XMP e atualiza o IPTC; os dados da imagem (a partir do SOS) ficam
+    iguais. Com drop_extra, sai também o que vem depois da imagem: o vídeo das fotos em movimento, a
+    segunda imagem do MPO e o trailer da Samsung guardam os dados deles, localização inclusive.
+    Devolve (JPEG, se havia algo depois)."""
     head, others, pos = [], [], 2
     while True:
         if pos + 4 > len(data) or data[pos] != 0xFF:
@@ -1256,6 +1275,8 @@ def rewrite_jpeg(data, tiff, xmp, values, strip):
             continue  # EXIF e XMP antigos: saem, os novos entram abaixo
         if strip and (marker == 0xED or marker == 0xFE):  # IPTC (Photoshop) e comentário
             continue
+        if drop_extra and marker == 0xE2 and body.startswith(b'MPF\x00'):  # o índice das imagens que saem
+            continue
         if marker == 0xED and body.startswith(PHOTOSHOP_ID):
             segment = jpeg_segment(0xED, PHOTOSHOP_ID + new_photoshop(body[len(PHOTOSHOP_ID):], values))
         (head if marker == 0xE0 and not others else others).append(segment)  # JFIF fica primeiro
@@ -1264,7 +1285,11 @@ def rewrite_jpeg(data, tiff, xmp, values, strip):
         new.append(jpeg_segment(0xE1, b'Exif\x00\x00' + tiff))
     if xmp:
         new.append(jpeg_segment(0xE1, XMP_ID + xmp.encode('utf-8')))
-    return b'\xff\xd8' + b''.join(head + new + others) + rest
+    extra = b''
+    if drop_extra:
+        end = jpeg_image_end(rest, 0)
+        rest, extra = rest[:end], rest[end:]
+    return b'\xff\xd8' + b''.join(head + new + others) + rest, bool(extra.strip(b'\x00'))
 
 
 def png_chunk(kind, payload):
@@ -1330,13 +1355,16 @@ def edit_image_metadata(path, base, form):
     exif, new_xmp, values = new_image_metadata(exif, xmp, form)
     tiff = exif.tobytes()[6:] if len(exif) else None  # sem o prefixo "Exif\0\0" do JPEG
     strip = bool(form.get('meta_strip'))
+    extra = False
     if fmt == 'JPEG':
-        out = rewrite_jpeg(data, tiff, new_xmp, values, strip)
+        out, extra = rewrite_jpeg(data, tiff, new_xmp, values, strip, drop_extra=strip or bool(form.get('img_strip_gps')))
     elif fmt == 'PNG':
         out = rewrite_png(data, tiff, new_xmp, values, strip)
     else:
         out = rewrite_webp(data, tiff, new_xmp, size, alpha)
     message = "Todos os metadados foram removidos (a orientação e o perfil de cor ficaram)." if strip else "Metadados atualizados."
+    if extra:
+        message += " O que vinha grudado depois da foto (vídeo da foto em movimento, imagens extras) também saiu."
     return out, f"{base}{path.suffix}", message
 
 
