@@ -60,7 +60,7 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 
 ### ➡️ Converter para PDF
 
-- **Imagens** (JPG, PNG, WebP, GIF, TIFF…), uma por página A4, respeitando a orientação da foto
+- **Imagens** (JPG, PNG, WebP, GIF, TIFF…), uma por página A4, respeitando a orientação da foto, sem recomprimir e com todas as páginas de um TIFF
 - **Word** (`.docx`, `.doc`, `.odt`, `.rtf`)
 - **PowerPoint** (`.pptx`, `.ppt`, `.odp`)
 - **Excel** (`.xlsx`, `.xls`, `.ods`, `.csv`)
@@ -69,8 +69,8 @@ Os sites de PDF cobram pelas funções mais úteis e recebem uma cópia de tudo 
 
 - **JPG**, uma imagem por página, em 72, 150 ou 300 DPI
 - **Word** editável
-- **PowerPoint**, com um slide por página (como imagem)
-- **Excel**, com cada tabela do PDF numa aba
+- **PowerPoint**, com um slide por página e o texto editável
+- **Excel**, com cada tabela do PDF numa aba (também as sem bordas, como as de extrato) e os valores e datas prontos para somar e ordenar
 
 </td>
 </tr>
