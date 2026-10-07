@@ -1287,6 +1287,27 @@ def test_pdf_to_excel_extracts_tables(client):
     assert [[cell.value for cell in row] for row in sheet.iter_rows()] == [["Produto", "Preço"], ["Café", 12.5], ["Pão", 0.75]]
 
 
+def test_pdf_to_excel_finds_tables_without_borders(client):
+    """Extratos de banco alinham as colunas sem desenhar linhas: a busca por linhas não achava nada, e
+    a mensagem mandava passar OCR num PDF que já tem texto."""
+    openpyxl = pytest.importorskip("openpyxl")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((60, 60), "Extrato da conta corrente - outubro de 2026", fontsize=12)
+    rows = [("Data", "Descrição", "Valor", "Saldo"), ("01/10/2026", "PIX recebido", "1.234,56", "5.000,00"),
+            ("02/10/2026", "Boleto pago", "-250,00", "4.750,00"), ("03/10/2026", "Tarifa", "-12,90", "4.737,10")]
+    for i, row in enumerate(rows):
+        for x, text in zip((60, 150, 330, 430), row):
+            page.insert_text((x, 100 + 18 * i), text, fontsize=10)
+    r = post(client, "pdf-to-excel", ("extrato.pdf", doc.tobytes()))
+    assert r.status_code == 200
+    sheet = openpyxl.load_workbook(io.BytesIO(r.data)).worksheets[0]
+    values = [[cell.value for cell in row] for row in sheet.iter_rows()]
+    assert [datetime(2026, 10, 1), "PIX recebido", 1234.56, 5000.0] in values
+    assert not any(all(v is None for v in row) for row in values)  # sem as linhas vazias da detecção
+    assert "linhas" in unquote(r.headers["X-Mensagem"])  # avisa que a tabela pode precisar de ajuste
+
+
 def test_pdf_to_excel_writes_amounts_and_dates_as_such(client):
     """Valores e datas entravam como texto, e o Excel não somava nem ordenava por data. Inteiros
     continuam texto: contas, CEPs e documentos têm zeros à esquerda."""
