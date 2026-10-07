@@ -94,6 +94,8 @@ Para usar sem instalar Python nem nada do `pip`, baixe o arquivo do seu sistema 
 - **Linux:** `chmod +x EuAmoPDF.AppImage && ./EuAmoPDF.AppImage`. Com dois cliques no arquivo ele abre um terminal sozinho (usa o terminal padrão do sistema, ou o `gnome-terminal`, `konsole`, `xfce4-terminal` ou `xterm`). Se ele reclamar do FUSE, rode com `--appimage-extract-and-run` ou instale o `libfuse2`.
 - **Windows:** dê dois cliques em `EuAmoPDF.exe`. Como o arquivo não é assinado, o SmartScreen avisa: clique em **Mais informações** e depois em **Executar assim mesmo**. Ele leva alguns segundos para abrir, porque se descompacta na pasta temporária a cada vez.
 
+Cada release traz também o `SHA256SUMS`, com a soma de verificação dos dois arquivos. Para conferir que o arquivo baixado é o que saiu do GitHub: `sha256sum -c SHA256SUMS --ignore-missing` no Linux, ou `certutil -hashfile EuAmoPDF.exe SHA256` no Windows, comparando com a linha dele.
+
 O navegador abre sozinho. O app fica preso ao terminal (a janela preta, no Windows): fechá-lo encerra o processo, e `Ctrl+C` nele também.
 
 O que **não** vem dentro é o Microsoft Office ou o LibreOffice, usados para converter Word, PowerPoint e Excel para PDF (veja [Programas opcionais](#programas-opcionais)); as demais ferramentas não precisam de nada.
