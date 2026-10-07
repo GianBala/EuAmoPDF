@@ -1,0 +1,7 @@
+# Erros que não deveriam chegar ao commit: de sintaxe e os do pyflakes (nome indefinido, import ou
+# variável sem uso, redefinição). Estilo fica de fora. As regras ficam escritas porque o padrão do ruff
+# muda de uma versão para outra; a versão fica fixa no workflow de testes.
+target-version = "py310"
+
+[lint]
+select = ["E9", "F"]
