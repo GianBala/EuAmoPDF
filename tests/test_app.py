@@ -1284,7 +1284,22 @@ def test_pdf_to_excel_extracts_tables(client):
     r = post(client, "pdf-to-excel", ("tabela.pdf", make_table_pdf(rows)))
     assert r.status_code == 200
     sheet = openpyxl.load_workbook(io.BytesIO(r.data)).worksheets[0]
-    assert [[cell.value for cell in row] for row in sheet.iter_rows()] == rows
+    assert [[cell.value for cell in row] for row in sheet.iter_rows()] == [["Produto", "Preço"], ["Café", 12.5], ["Pão", 0.75]]
+
+
+def test_pdf_to_excel_writes_amounts_and_dates_as_such(client):
+    """Valores e datas entravam como texto, e o Excel não somava nem ordenava por data. Inteiros
+    continuam texto: contas, CEPs e documentos têm zeros à esquerda."""
+    openpyxl = pytest.importorskip("openpyxl")
+    rows = [["Data", "Valor", "CPF", "Conta"],
+            ["01/10/2026", "1.234,56", "123.456.789-00", "000123"],
+            ["31/12/2026", "-12,90", "01001-000", "R$ 10,00"]]
+    r = post(client, "pdf-to-excel", ("extrato.pdf", make_table_pdf(rows)))
+    sheet = openpyxl.load_workbook(io.BytesIO(r.data)).worksheets[0]
+    assert [[cell.value for cell in row] for row in sheet.iter_rows(min_row=2)] == [
+        [datetime(2026, 10, 1), 1234.56, "123.456.789-00", "000123"],
+        [datetime(2026, 12, 31), -12.9, "01001-000", 10.0]]
+    assert sheet["B2"].number_format == "#,##0.00" and sheet["A2"].number_format == "dd/mm/yyyy"
 
 
 def test_pdf_to_excel_without_tables(client):
