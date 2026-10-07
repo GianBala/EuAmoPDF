@@ -579,22 +579,45 @@ def sheet_cell(ws, text):
     return ILLEGAL_CHARACTERS_RE.sub('', text)
 
 
+def table_rows(doc):
+    """[(página, linhas de cada tabela)] e se as tabelas vieram sem linhas desenhadas. Extratos de banco
+    só alinham as colunas: quando nenhuma página tem tabela com linhas, a busca é pelo alinhamento do
+    texto, que também pega título e rodapé (e pode tomar texto corrido por tabela). Por isso ela só
+    entra quando a outra não acha nada, e sem as linhas e colunas vazias que ela cria."""
+    found = [(page, [t.extract() for t in page.find_tables().tables]) for page in doc]
+    if any(tables for _, tables in found):
+        return found, False
+    found = []
+    for page in doc:
+        tables = []
+        for rows in (t.extract() for t in page.find_tables(strategy='text').tables):
+            rows = [row for row in rows if any(cell and cell.strip() for cell in row)]
+            keep = [i for i in range(len(rows[0]) if rows else 0) if any(row[i] and row[i].strip() for row in rows)]
+            if len(rows) >= 2 and len(keep) >= 2:
+                tables.append([[row[i] for i in keep] for row in rows])
+        found.append((page, tables))
+    return found, True
+
+
 def pdf_to_excel(files, form, tmp):
     from openpyxl import Workbook
     path, base = files[0]
     doc = open_pdf(path)
     wb = Workbook()
     wb.remove(wb.active)
-    for page in doc:
-        for n, table in enumerate(page.find_tables().tables, 1):
+    pages, borderless = table_rows(doc)
+    for page, tables in pages:
+        for n, rows in enumerate(tables, 1):
             ws = wb.create_sheet(f"Pág {page.number + 1} - Tabela {n}")
-            for row in table.extract():
+            for row in rows:
                 ws.append([sheet_cell(ws, cell) for cell in row])
     if not wb.sheetnames:
-        raise UserError("Nenhuma tabela encontrada neste PDF. Se ele for escaneado, passe o OCR antes.")
+        scanned = not any(page.get_text().strip() for page in doc)
+        raise UserError("Nenhuma tabela encontrada neste PDF." + (" Ele parece escaneado: passe o OCR antes." if scanned else ""))
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue(), f"{base}.xlsx"
+    found = ["O PDF não tem tabelas com linhas: elas foram montadas pelo alinhamento do texto. Confira a planilha."] if borderless else []
+    return buf.getvalue(), f"{base}.xlsx", *found
 
 
 def pdf_to_ppt(files, form, tmp):
