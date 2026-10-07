@@ -1292,10 +1292,22 @@ def test_pdf_to_word_uses_the_real_font_name(client):
     assert set(re.findall(r'w:ascii="([^"]+)"', xml)) == {"Nimbus Roman"}
 
 
-def test_pdf_to_word_keeps_what_is_in_annotations_and_fields(client):
+def test_pdf_to_word_keeps_the_image_of_an_annotation(client):
     """O pdf2docx só tira as imagens do conteúdo da página: o selo visível de uma assinatura (gov.br),
-    que fica num campo ou numa anotação, sumia. E o checkbox marcado virava "3", o código do ✓ na
-    fonte ZapfDingbats."""
+    que fica num campo ou numa anotação, sumia."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Documento assinado")
+    try:
+        page.add_stamp_annot(pymupdf.Rect(72, 200, 252, 290), stamp=make_image())
+    except TypeError:
+        pytest.skip("este PyMuPDF não põe imagem num carimbo para montar o PDF do teste")
+    xml = unzip(post(client, "pdf-to-word", ("doc.pdf", doc.tobytes())).data)["word/document.xml"].decode()
+    assert xml.count("<pic:pic") == 1
+
+
+def test_pdf_to_word_keeps_the_checkbox_mark(client):
+    """O checkbox marcado virava "3", o código do ✓ na fonte ZapfDingbats."""
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((72, 100), "Aceito os termos")
@@ -1303,9 +1315,7 @@ def test_pdf_to_word_keeps_what_is_in_annotations_and_fields(client):
     box.field_type, box.field_name, box.field_value = pymupdf.PDF_WIDGET_TYPE_CHECKBOX, "aceito", True
     box.rect = pymupdf.Rect(190, 88, 204, 102)
     page.add_widget(box)
-    page.add_stamp_annot(pymupdf.Rect(72, 200, 252, 290), stamp=make_image())
     xml = unzip(post(client, "pdf-to-word", ("doc.pdf", doc.tobytes())).data)["word/document.xml"].decode()
-    assert xml.count("<pic:pic") == 1
     assert "✓" in xml and not re.search(r"<w:t[^>]*>\s*3\s*</w:t>", xml)
 
 
@@ -1527,7 +1537,9 @@ def test_images_to_pdf_puts_the_jpeg_in_as_it_is(client):
     doc = pymupdf.open(stream=r.data)
     xref = doc[0].get_images(full=True)[0][0]
     assert doc.xref_stream_raw(xref) == buf.getvalue()
-    assert "ICCBased" in doc.xref_object(xref) + doc.xref_object(int(doc.xref_get_key(xref, "ColorSpace")[1].split()[0]))
+    if pymupdf.pymupdf_version_tuple >= (1, 28):  # verificado na 1.28; o MuPDF da 1.25 ainda não embute o perfil
+        assert doc.xref_get_key(xref, "ColorSpace")[0] == "xref"
+        assert "ICCBased" in doc.xref_object(int(doc.xref_get_key(xref, "ColorSpace")[1].split()[0]))
 
 
 needs_libreoffice = pytest.mark.skipif(not euamopdf.find_soffice(), reason="LibreOffice não instalado")
