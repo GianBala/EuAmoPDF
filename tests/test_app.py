@@ -1334,6 +1334,46 @@ def test_images_to_pdf_follows_exif_orientation(client):
     assert page.rect.height > page.rect.width
 
 
+def test_images_to_pdf_keeps_every_page_of_a_tiff(client):
+    """TIFF de scanner ou fax costuma ter várias páginas; só a primeira ia para o PDF."""
+    pages = [Image.new("L", (200, 300), shade) for shade in (40, 128, 220)]
+    buf = io.BytesIO()
+    pages[0].save(buf, "TIFF", save_all=True, append_images=pages[1:])
+    r = post(client, "jpg-to-pdf", ("digitalizado.tif", buf.getvalue()))
+    assert pymupdf.open(stream=r.data).page_count == 3
+
+
+def test_images_to_pdf_keeps_16_bit_images(client):
+    """PNG de 16 bits em tons de cinza saía como uma página branca."""
+    gradient = np.tile(np.linspace(0, 65535, 600), (400, 1)).astype(np.uint16)
+    buf = io.BytesIO()
+    Image.fromarray(gradient).save(buf, "PNG")
+    r = post(client, "jpg-to-pdf", ("cinza.png", buf.getvalue()))
+    pix = pymupdf.open(stream=r.data)[0].get_pixmap(dpi=30)
+    assert len(set(pix.samples)) > 100
+
+
+def test_images_to_pdf_does_not_render_other_files_named_as_images(client):
+    """O MuPDF, que agora monta o PDF, abre também HTML e PDF: o que não for imagem é recusado antes."""
+    for content in (b"<html><body><h1>Oi</h1></body></html>", make_pdf(1)):
+        r = post(client, "jpg-to-pdf", ("foto.jpg", content))
+        assert r.status_code == 400 and "não é uma imagem válida" in r.get_data(as_text=True)
+
+
+def test_images_to_pdf_puts_the_jpeg_in_as_it_is(client):
+    """A foto era recomprimida (o PDF ficava maior que ela e pior) e perdia o perfil de cor."""
+    from PIL import ImageCms
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    photo = make_photo((400, 300), quality=85)
+    buf = io.BytesIO()
+    Image.open(io.BytesIO(photo)).save(buf, "JPEG", quality=85, icc_profile=icc)
+    r = post(client, "jpg-to-pdf", ("foto.jpg", buf.getvalue()))
+    doc = pymupdf.open(stream=r.data)
+    xref = doc[0].get_images(full=True)[0][0]
+    assert doc.xref_stream_raw(xref) == buf.getvalue()
+    assert "ICCBased" in doc.xref_object(xref) + doc.xref_object(int(doc.xref_get_key(xref, "ColorSpace")[1].split()[0]))
+
+
 needs_libreoffice = pytest.mark.skipif(not euamopdf.find_soffice(), reason="LibreOffice não instalado")
 
 
