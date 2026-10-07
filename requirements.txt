@@ -8,4 +8,5 @@ python-pptx>=1.0
 numpy>=1.24
 onnxruntime>=1.17
 opencv-python-headless>=4.8
+pyhanko>=0.37
 pywin32; sys_platform == 'win32'

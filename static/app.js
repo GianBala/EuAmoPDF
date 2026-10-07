@@ -105,6 +105,7 @@ function render() {
         return item;
     }));
     submit.disabled = files.length === 0;
+    showSignatures(null);  // o resultado era de outro arquivo
     updateDropText();
     showPageInfo();
     scheduleEstimate();
@@ -252,6 +253,10 @@ form.addEventListener('submit', async (event) => {
         }
         $('order').value = JSON.stringify(pages.map(({ pagina, giro }) => ({ pagina, giro })));
     }
+    if (tool.action === 'verify-signature') {
+        await verifySignature();
+        return;
+    }
     if (previewing() && !edits) {
         await startEditor();
         return;
@@ -285,6 +290,75 @@ form.addEventListener('submit', async (event) => {
         setBusy(false);
     }
 });
+
+// --- Validar assinatura (não devolve arquivo: mostra o resultado na própria tela) ---
+
+async function verifySignature() {
+    const data = new FormData();
+    data.append('file', files[0]);
+    if (form.elements.revocation.checked) data.append('revocation', '1');
+    setBusy(true);
+    setStatus('');
+    showSignatures(null);
+    try {
+        const response = await fetch('/signatures', { method: 'POST', body: data });
+        if (!response.ok) {
+            setStatus(await response.text(), 'error');
+            return;
+        }
+        showSignatures((await response.json()).assinaturas);
+    } catch {
+        setStatus('Não foi possível falar com o EuAmoPDF. Ele ainda está aberto?', 'error');
+    } finally {
+        setBusy(false);
+    }
+}
+
+const MARKS = new Map([[true, ['✓', 'ok']], [false, ['✗', 'problem']], [null, ['!', 'note']]]);
+
+// Só textContent: o nome e o resto saem de um certificado, que é entrada do usuário
+function showSignatures(list) {
+    const box = $('signatures');
+    if (!list) {
+        box.replaceChildren();
+        return;
+    }
+    if (!list.length) {
+        const none = document.createElement('p');
+        none.textContent = 'Este PDF não tem assinatura digital.';
+        box.replaceChildren(none);
+        return;
+    }
+    box.replaceChildren(...list.map((signature, i) => {
+        const card = document.createElement('section');
+        card.className = `signature ${signature.veredito}`;
+        const title = document.createElement('h4');
+        title.textContent = list.length > 1 ? `Assinatura ${i + 1} de ${list.length}: ${signature.resumo}` : signature.resumo;
+        card.append(title);
+        if (signature.nome) {
+            const signer = document.createElement('p');
+            signer.className = 'signer';
+            signer.textContent = `${signature.confirmado ? 'Assinado por' : 'Assinante informado (não confirmado):'} `
+                + signature.nome + (signature.cpf ? ` · CPF ${signature.cpf}` : '');
+            card.append(signer);
+        }
+        const rows = document.createElement('ul');
+        rows.append(...signature.itens.map((item) => {
+            const [symbol, kind] = MARKS.get(item.ok);
+            const row = document.createElement('li');
+            const mark = document.createElement('span');
+            mark.className = `mark ${kind}`;
+            mark.setAttribute('aria-hidden', 'true');
+            mark.textContent = symbol;
+            const text = document.createElement('span');
+            text.textContent = `${item.rotulo}: ${item.texto}`;
+            row.append(mark, text);
+            return row;
+        }));
+        card.append(rows);
+        return card;
+    }));
+}
 
 function formData() {
     const data = new FormData(form);
