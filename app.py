@@ -54,13 +54,25 @@ warnings.filterwarnings('ignore', category=Image.DecompressionBombWarning)  # en
 TOO_BIG = "A imagem é grande demais: o limite é de 300 megapixels."
 
 
+TEXT = {'Content-Type': 'text/plain; charset=utf-8'}  # mensagem de erro, que pode ter o nome do arquivo: nunca HTML
+
+
 @app.before_request
 def only_local_requests():
     """Recusa requisições de outros sites abertos no navegador (CSRF e DNS rebinding)."""
     origin = request.headers.get('Origin')
     if urlparse('//' + request.host).hostname not in LOCAL_HOSTS or \
             (origin and urlparse(origin).hostname not in LOCAL_HOSTS):
-        return "Acesso permitido só a partir deste computador.", 403
+        return "Acesso permitido só a partir deste computador.", 403, TEXT
+
+
+@app.after_request
+def security_headers(response):
+    """Segunda camada, além da checagem de origem: só os arquivos do próprio app rodam na página
+    (as miniaturas e o ícone são data:, o download é blob:), e nenhum site a põe num iframe."""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'"
+    return response
 
 
 def program_file(*parts):
@@ -2022,18 +2034,18 @@ def process_uploads(action, work):
 
 @app.errorhandler(UserError)
 def user_error(e):
-    return str(e), 400
+    return str(e), 400, TEXT
 
 @app.errorhandler(413)
 def too_large(e):
-    return f"Arquivo grande demais: o limite é {MAX_UPLOAD_MB} MB.", 413
+    return f"Arquivo grande demais: o limite é {MAX_UPLOAD_MB} MB.", 413, TEXT
 
 @app.errorhandler(Exception)
 def unexpected_error(e):
     if isinstance(e, HTTPException):
         return e  # 404, 405...: a resposta padrão do Flask já serve
     app.logger.exception("Falha em %s", request.form.get('action'))
-    return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500
+    return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500, TEXT
 
 @app.route('/convert', methods=['POST'])
 def handle_conversion():
