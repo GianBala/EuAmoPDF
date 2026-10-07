@@ -2285,11 +2285,54 @@ def unexpected_error(e):
     app.logger.exception("Falha em %s", request.form.get('action'))
     return "Não foi possível processar o arquivo. Veja se ele abre normalmente em outro programa.", 500, TEXT
 
+# Ferramentas que gravam um PDF novo a partir do enviado
+REWRITES_PDF = {'merge-pdf', 'split-pdf', 'organize-pdf', 'rotate-pdf', 'compress-pdf', 'ocr-pdf', 'watermark-pdf',
+                'number-pages', 'edit-metadata', 'protect-pdf', 'unlock-pdf'}
+SIGNED_WARNING = ("O PDF enviado tem assinatura digital (como a do gov.br): no arquivo gerado ela não vale mais, "
+                  "mesmo que o selo continue aparecendo. Para entregar um documento assinado, assine depois de montá-lo.")
+
+
+def signed(path, password=''):
+    """Se o PDF foi assinado digitalmente (a assinatura do gov.br, por exemplo): um campo de assinatura
+    com valor. O SigFlags não basta, porque um campo ainda vazio também o liga; os campos vêm do
+    formulário, e não das páginas, porque a assinatura invisível não fica em nenhuma."""
+    try:
+        doc = pymupdf.open(stream=path.read_bytes(), filetype='pdf')
+        if doc.needs_pass and not doc.authenticate(password):
+            return False
+        kind, fields = doc.xref_get_key(doc.pdf_catalog(), 'AcroForm/Fields')
+        if kind == 'xref':
+            fields = doc.xref_object(int(fields.split()[0]))
+        pending, seen = [int(n) for n in re.findall(r'(\d+) \d+ R', fields)] if kind != 'null' else [], set()
+        while pending:
+            xref = pending.pop()
+            if xref in seen:
+                continue
+            seen.add(xref)
+            if doc.xref_get_key(xref, 'FT')[1] == '/Sig' and doc.xref_get_key(xref, 'V')[0] != 'null':
+                return True
+            kind, kids = doc.xref_get_key(xref, 'Kids')
+            if kind != 'null':
+                pending += [int(n) for n in re.findall(r'(\d+) \d+ R', doc.xref_object(int(kids.split()[0])) if kind == 'xref' else kids)]
+    except Exception:  # PDF que nem abre: a ferramenta já respondeu por ele
+        return False
+    return False
+
+
 @app.route('/convert', methods=['POST'])
 def handle_conversion():
     action = request.form.get('action')
-    data, download_name, *message = process_uploads(
-        action, lambda saved, tmp: ACTIONS[action][0](saved, request.form, tmp))
+
+    def work(saved, tmp):
+        data, download_name, *message = ACTIONS[action][0](saved, request.form, tmp)
+        # A assinatura digital cobre os bytes exatos do arquivo assinado: o PDF gravado de novo não a
+        # tem mais válida, e o selo que continua na página engana quem recebe
+        if action in REWRITES_PDF and any(path.suffix == '.pdf' and data != path.read_bytes()
+                                          and signed(path, request.form.get('password', '')) for path, _ in saved):
+            message = [' '.join(message + [SIGNED_WARNING])]
+        return data, download_name, *message
+
+    data, download_name, *message = process_uploads(action, work)
     response = send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
     if message:  # cabeçalhos HTTP só aceitam ASCII
         response.headers['X-Mensagem'] = quote(message[0])
