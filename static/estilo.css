@@ -11,6 +11,8 @@
     --ok-soft: #e5f5eb;
     --error: #b3261e;
     --error-soft: #fdecea;
+    --warn: #8a5a00;
+    --warn-soft: #fff3d6;
     color-scheme: light;
 }
 
@@ -28,6 +30,8 @@
         --ok-soft: #1c3326;
         --error: #ff8a80;
         --error-soft: #3a2323;
+        --warn: #f5c451;
+        --warn-soft: #3a3016;
         color-scheme: dark;
     }
 }
@@ -317,6 +321,27 @@ form.editing #drop, form.editing #file-list, form.editing #page-info { display: 
 
 .primary:hover:not(:disabled) { background: var(--accent-hover); }
 .primary:disabled { opacity: 0.5; cursor: default; }
+
+.signatures { display: grid; gap: 12px; }
+.signature { border: 1px solid var(--border); border-left-width: 4px; border-radius: 10px; padding: 12px 14px; }
+.signature.ok { border-left-color: var(--ok); }
+.signature.atencao { border-left-color: var(--warn); }
+.signature.invalida { border-left-color: var(--error); }
+.signature h4 { margin: 0 0 4px; font-size: 1rem; }
+.signature .signer { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
+.signature ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.92rem; }
+.signature li { display: grid; grid-template-columns: 1.2em 1fr; gap: 6px; }
+.mark { font-weight: 700; }
+.mark.ok { color: var(--ok); }
+.mark.problem { color: var(--error); }
+.mark.note { color: var(--warn); }
+
+#signature-dialog h3 { margin: 0 0 12px; font-size: 1.3rem; }
+#signature-dialog p { margin: 0 0 8px; }
+.dialog-actions { display: flex; gap: 12px; margin-top: 20px; }
+.dialog-actions button { flex: 1; margin-top: 0; padding: 12px; border-radius: 10px; font: inherit; font-weight: 700; cursor: pointer; }
+.secondary { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.secondary:hover { background: var(--bg); }
 
 .primary.busy::before {
     content: "";

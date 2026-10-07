@@ -1,11 +1,13 @@
 import hashlib
 import io
+import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
 import tempfile
 import types
+import unicodedata
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -17,6 +19,7 @@ import pytest
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 import app as euamopdf
+import pki as certs
 
 
 @pytest.fixture
@@ -1924,25 +1927,415 @@ def signed_pdf(signed=True, **save_options):
 
 @pytest.mark.parametrize("action, form", [("merge-pdf", {}), ("rotate-pdf", {"angle": "90"}),
                                           ("edit-metadata", {"meta_title": "Novo"}), ("number-pages", {})])
-def test_rewriting_a_signed_pdf_warns_that_the_signature_stops_counting(client, action, form):
+def test_rewriting_a_signed_pdf_flags_that_the_signature_stops_counting(client, action, form):
     """A assinatura digital (a do gov.br, por exemplo) cobre os bytes exatos do arquivo assinado: no
-    PDF gravado de novo ela não vale mais, mesmo que o selo continue aparecendo na página."""
+    PDF gravado de novo ela não vale mais, mesmo que o selo continue aparecendo na página. O servidor
+    só sinaliza (a tela pergunta antes de baixar); o texto do aviso não viaja mais na mensagem."""
     r = post(client, action, ("assinado.pdf", signed_pdf()), **form)
     assert r.status_code == 200
-    assert "assinatura digital" in unquote(r.headers["X-Mensagem"])
+    assert r.headers["X-Assinatura"] == "perdida"
+    assert "assinatura" not in unquote(r.headers.get("X-Mensagem", ""))
 
 
 def test_no_signature_warning_without_a_signature(client):
     for pdf in (make_pdf(), signed_pdf(signed=False)):  # campo de assinatura vazio: o documento não foi assinado
-        assert "assinatura" not in unquote(post(client, "merge-pdf", ("a.pdf", pdf)).headers.get("X-Mensagem", ""))
+        assert "X-Assinatura" not in post(client, "merge-pdf", ("a.pdf", pdf)).headers
 
 
 def test_no_signature_warning_when_the_pdf_is_not_rewritten(client):
-    assert "X-Mensagem" not in post(client, "pdf-to-jpg", ("assinado.pdf", signed_pdf())).headers  # não é PDF
+    assert "X-Assinatura" not in post(client, "pdf-to-jpg", ("assinado.pdf", signed_pdf())).headers  # não é PDF
     # Já otimizado: o Comprimir devolve o próprio arquivo, e a assinatura continua valendo
     optimized = signed_pdf(garbage=4, deflate=True, clean=True, use_objstms=1)
     r = post(client, "compress-pdf", ("assinado.pdf", optimized))
-    assert r.data == optimized and "assinatura" not in unquote(r.headers["X-Mensagem"])
+    assert r.data == optimized and "X-Assinatura" not in r.headers
+
+
+# --- Validar assinatura digital ---
+
+@pytest.fixture(scope="module")
+def pki():
+    """Duas AC independentes (a "do gov.br" do teste e uma qualquer), geradas uma vez por módulo."""
+    return types.SimpleNamespace(govbr=certs.new_authority("AC Raiz de Teste"), other=certs.new_authority("AC Qualquer"),
+                                 issue=certs.issue_person)
+
+
+def sign_pdf_with(person, pdf=None):
+    return certs.sign_pdf(person, pdf or make_pdf(1))
+
+
+@pytest.fixture
+def govbr(pki, monkeypatch):
+    """A cadeia do gov.br passa a ser a AC de teste, e a internet fica proibida até o teste liberar."""
+    monkeypatch.setattr(euamopdf, "govbr_chain", lambda: (pki.govbr.asn1, []))
+    def no_network():
+        raise AssertionError("a validação foi à internet sem o usuário pedir")
+    monkeypatch.setattr(euamopdf, "fetch_crls", no_network)
+    return pki.govbr
+
+
+@pytest.fixture
+def signed(pki, govbr):
+    return sign_pdf_with(pki.issue(govbr))
+
+
+def row(entry, label):
+    return next(item for item in entry["itens"] if item["rotulo"] == label)
+
+
+def test_a_valid_signature_names_the_signer_and_masks_the_cpf(signed):
+    [entry] = euamopdf.check_signatures(signed)
+    assert entry["veredito"] == "ok" and entry["confirmado"]
+    assert entry["nome"] == "MARIA DE TESTE" and entry["cpf"] == "***.982.247-**"
+    assert row(entry, "Conteúdo")["ok"] is True and row(entry, "Certificado")["ok"] is True
+    assert row(entry, "Revogação")["texto"].startswith("Não conferida")  # não pedida: não finge que conferiu
+    # o certificado carrega a data de nascimento e o CPF inteiro, e nada disso sai daqui
+    assert certs.GOOD_CPF not in json.dumps(entry) and certs.BIRTH not in json.dumps(entry)
+
+
+def test_a_pdf_without_signatures_has_an_empty_report(govbr):
+    assert euamopdf.check_signatures(make_pdf()) == []
+
+
+def test_changing_the_signed_content_invalidates_the_signature(signed):
+    tampered = bytearray(signed)
+    at = tampered.index(b"/Type/Page") + 1
+    tampered[at] = ord("t")
+    [entry] = euamopdf.check_signatures(bytes(tampered))
+    assert entry["veredito"] == "invalida" and not entry["confirmado"]
+    assert row(entry, "Conteúdo")["ok"] is False
+    assert row(entry, "Certificado")["texto"].startswith("Não avaliado")  # o nome não está comprovado
+
+
+def test_a_page_added_after_signing_invalidates_it(signed):
+    [entry] = euamopdf.check_signatures(certs.append_update(signed, "page"))
+    assert entry["veredito"] == "invalida" and "alterado depois" in entry["resumo"]
+
+
+def test_changes_the_signature_allows_ask_for_attention_not_for_alarm(signed):
+    [entry] = euamopdf.check_signatures(certs.append_update(signed, "title"))
+    assert entry["veredito"] == "atencao" and row(entry, "Conteúdo")["ok"] is None
+
+
+def test_the_signature_a_merge_copies_does_not_hold_in_the_merged_file(client, signed):
+    """O caso que apareceu à mão: o Juntar copia o campo de assinatura com o /ByteRange do original, e o
+    arquivo juntado passa a trazer uma assinatura que não fecha, com o selo ainda na página."""
+    merged = post(client, "merge-pdf", ("a.pdf", signed), ("b.pdf", make_pdf(1))).data
+    [entry] = euamopdf.check_signatures(merged)
+    assert entry["veredito"] == "invalida" and row(entry, "Conteúdo")["ok"] is False
+    # o ByteRange copiado aponta além do fim do arquivo juntado, e o VALIDAR do ITI mostra isso como "assinatura desconhecida"
+    assert "bytes além do fim do arquivo" in row(entry, "Conteúdo")["texto"] and "cortado ou regravado" in entry["resumo"]
+
+
+def test_a_certificate_from_another_authority_is_not_taken_as_govbr(pki, govbr):
+    [entry] = euamopdf.check_signatures(sign_pdf_with(pki.issue(pki.other, name="FULANO QUALQUER")))
+    assert entry["veredito"] == "atencao" and not entry["confirmado"]
+    assert row(entry, "Conteúdo")["ok"] is True  # o conteúdo confere; quem assinou é que não está comprovado
+    assert row(entry, "Certificado")["texto"].startswith("Não foi possível confirmar")
+
+
+def test_an_expired_certificate_is_judged_at_the_date_the_signer_declared(signed):
+    later = datetime.now(timezone.utc) + timedelta(days=2 * 365)
+    [entry] = euamopdf.check_signatures(signed, now=later)
+    assert entry["veredito"] == "atencao" and entry["confirmado"]  # o nome é dela; o que não se garante é a data
+    assert row(entry, "Certificado")["texto"].startswith("Venceu em")
+
+
+def test_revocation_is_only_checked_when_asked_and_reports_each_outcome(pki, govbr, monkeypatch):
+    person = pki.issue(govbr)
+    pdf = sign_pdf_with(person)
+    monkeypatch.setattr(euamopdf, "fetch_crls", lambda: [certs.crl_of(govbr)])
+    [entry] = euamopdf.check_signatures(pdf, check_revocation=True)
+    assert entry["veredito"] == "ok" and row(entry, "Revogação")["texto"].startswith("Conferida")
+    monkeypatch.setattr(euamopdf, "fetch_crls", lambda: [certs.crl_of(govbr, revoked=[person.cert.serial_number])])
+    [entry] = euamopdf.check_signatures(pdf, check_revocation=True)
+    assert entry["veredito"] == "invalida" and row(entry, "Revogação")["ok"] is False
+    def offline():
+        raise OSError("sem internet")
+    monkeypatch.setattr(euamopdf, "fetch_crls", offline)
+    [entry] = euamopdf.check_signatures(pdf, check_revocation=True)
+    assert entry["veredito"] == "atencao" and row(entry, "Revogação")["texto"].startswith("Não consegui conferir")
+
+
+def test_the_revocation_lists_come_only_from_the_fixed_urls_and_are_cached(pki, monkeypatch):
+    asked = []
+    class Response:
+        def __init__(self, url): self.url = url
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def read(self, limit): return certs.crl_of(pki.govbr).dump()
+    monkeypatch.setattr(euamopdf, "CRL_CACHE", {})
+    monkeypatch.setattr(euamopdf, "CRL_OPENER", types.SimpleNamespace(open=lambda url, timeout: asked.append(url) or Response(url)))
+    assert len(euamopdf.fetch_crls()) == 3
+    euamopdf.fetch_crls()
+    assert asked == list(euamopdf.GOVBR_CRLS)  # a segunda chamada saiu do cache, que vale até o prazo da lista
+    assert all(url.startswith("http://repo.iti.br/") for url in asked)
+
+
+def test_the_identity_never_exposes_more_than_the_name_and_a_masked_cpf(pki, govbr):
+    person = lambda **options: pki.issue(govbr, **options).asn1  # noqa: E731
+    assert euamopdf.signer_identity(person()) == ("MARIA DE TESTE", "***.982.247-**")
+    assert euamopdf.signer_identity(person(personal=(certs.BIRTH + "52998224726" + "0" * 26).encode()))[1] is None  # CPF inválido
+    assert euamopdf.signer_identity(person(personal=None)) == ("MARIA DE TESTE", None)
+    assert euamopdf.signer_identity(person(name=f"MARIA DE TESTE:{certs.GOOD_CPF}"))[0] == "MARIA DE TESTE"  # e-CPF: sem o CPF no nome
+
+
+def two_signatures(pki, govbr, first_permission):
+    """O fluxo do gov.br: o aluno assina primeiro, como certificação, e depois o orientador, num campo visível novo."""
+    first = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=first_permission)
+    return certs.sign_pdf(pki.issue(govbr, name="SEGUNDO ASSINANTE"), first, field_name="Signature2", box=(72, 700, 272, 760))
+
+
+def test_a_second_visible_signature_after_a_certification_keeps_the_first_one_valid(pki, govbr):
+    """Caso real, medido contra o validador do gov.br: a primeira assinatura de um documento com duas era dada
+    como inválida, porque o pyHanko reprova por padrão um campo visível novo depois de uma certificação."""
+    first, second = euamopdf.check_signatures(two_signatures(pki, govbr, certs.MDPPerm.FILL_FORMS))
+    assert first["veredito"] == "ok" and second["veredito"] == "ok"
+    assert row(first, "Conteúdo")["texto"].endswith("recebeu mais 1 assinatura, o que esta assinatura permite.")
+    assert row(second, "Conteúdo")["texto"] == "O documento é o mesmo que foi assinado."
+
+
+def test_a_certification_that_allows_no_changes_is_still_broken_by_a_new_signature_field(pki, govbr):
+    """O pyHanko nem assina depois de uma certificação sem mudanças; o campo visível novo, que uma segunda
+    assinatura criaria, entra por atualização incremental, e a primeira tem que continuar reprovada."""
+    pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.NO_CHANGES)
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "field"))
+    assert entry["veredito"] == "invalida" and row(entry, "Conteúdo")["ok"] is False
+
+
+def test_the_exception_for_later_signatures_does_not_hide_other_changes(pki, govbr):
+    pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.FILL_FORMS)
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "page"))
+    assert entry["veredito"] == "invalida"
+
+
+def test_the_declared_date_is_the_one_in_the_signature_dictionary():
+    """O validador do gov.br mostra o /M; o signing-time de dentro do CMS saiu 1 s à frente no documento comparado."""
+    sig = types.SimpleNamespace(sig_object={"/M": "D:20260325155916-03'00'"},
+                                self_reported_timestamp=datetime(2000, 1, 1, tzinfo=timezone.utc))
+    assert euamopdf.declared_time(sig).isoformat() == "2026-03-25T15:59:16-03:00"
+    sig.sig_object = {}
+    assert euamopdf.declared_time(sig).year == 2000  # sem /M, vale o signing-time
+
+
+def test_a_later_signature_is_expected_with_or_without_a_declared_permission(pki, govbr):
+    """Medido contra o VALIDAR: a 1ª assinatura de 3 PDFs sem DocMDP nenhum (Anexo I, Anexo IV e o relatório) foi aprovada
+    quando só a 2ª assinatura entrou depois, embora a cartilha dele diga que "poderá" dar indeterminada."""
+    first = sign_pdf_with(pki.issue(govbr))
+    both = certs.sign_pdf(pki.issue(govbr, name="SEGUNDO ASSINANTE"), first, field_name="Signature2", box=(72, 700, 272, 760))
+    first_entry, second_entry = euamopdf.check_signatures(both)
+    assert first_entry["veredito"] == "ok" and row(first_entry, "Conteúdo")["texto"].endswith("recebeu mais 1 assinatura.")
+    assert second_entry["veredito"] == "ok"
+
+
+def test_other_changes_after_a_signature_that_does_not_declare_what_it_allows_stay_amber(pki, govbr):
+    pdf = sign_pdf_with(pki.issue(govbr))
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "title"))
+    assert entry["veredito"] == "atencao" and "não declara o que permite" in row(entry, "Conteúdo")["texto"]
+
+
+def test_a_document_timestamp_is_not_taken_for_a_signature_nor_for_a_change(pki, govbr):
+    stamped = certs.timestamp_pdf(govbr, certs.sign_pdf(pki.issue(govbr), make_pdf(1)))
+    [entry] = euamopdf.check_signatures(stamped)  # antes saía um cartão vermelho a mais, "não consegui ler esta assinatura"
+    assert entry["veredito"] == "ok" and row(entry, "Conteúdo")["texto"] == "O documento é o mesmo que foi assinado."
+    assert "carimbo de tempo, que não é analisado" in row(entry, "Data")["texto"]
+
+
+def test_a_revocation_after_the_declared_date_is_a_caveat_and_before_it_is_a_failure(pki, govbr, monkeypatch):
+    person = pki.issue(govbr)
+    pdf = sign_pdf_with(person)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    def revoked_at(when):
+        return lambda: [certs.crl_of(govbr, revoked=[person.cert.serial_number], when=when)]
+    monkeypatch.setattr(euamopdf, "fetch_crls", revoked_at(datetime.now(timezone.utc) - timedelta(hours=1)))
+    [entry] = euamopdf.check_signatures(pdf, check_revocation=True)
+    assert entry["veredito"] == "invalida" and "antes da data que o assinante declarou" in row(entry, "Revogação")["texto"]
+    monkeypatch.setattr(euamopdf, "fetch_crls", revoked_at(datetime.now(timezone.utc) + timedelta(minutes=2)))
+    [entry] = euamopdf.check_signatures(pdf, check_revocation=True, now=later)
+    assert entry["veredito"] == "atencao" and "depois da data" in row(entry, "Revogação")["texto"]
+
+
+def test_a_date_without_a_time_zone_is_read_as_utc_and_a_broken_signature_is_not_called_invalid(monkeypatch, signed):
+    sig = types.SimpleNamespace(sig_object={"/M": "D:20260325155916"}, self_reported_timestamp=None)
+    assert euamopdf.declared_time(sig).isoformat() == "2026-03-25T15:59:16+00:00"
+    def broken(*args, **kwargs):
+        raise ValueError("assinatura que o pyHanko não consegue abrir")
+    monkeypatch.setattr(euamopdf, "describe_signature", broken)
+    [entry] = euamopdf.check_signatures(signed)
+    assert entry["veredito"] == "atencao" and entry["resumo"] == "Não consegui conferir esta assinatura."  # e não "inválida"
+
+
+def test_an_irregular_pdf_is_read_leniently_and_trusted_only_while_the_reader_has_no_complaints(pki, govbr, monkeypatch):
+    """Medido em PDFs reais: o modo estrito do pyHanko recusava a geração 4294967295 no objeto 0 e as referências
+    híbridas, e o VALIDAR aprova esses arquivos. O modo tolerante troca por nulo o que não lê, e isso é avisado: com
+    aviso, a análise de alterações depois da assinatura não vale."""
+    import logging
+    import pyhanko.pdf_utils.reader as reader_module
+    two = two_signatures(pki, govbr, certs.MDPPerm.FILL_FORMS)
+    single = sign_pdf_with(pki.issue(govbr))
+    complaints = []
+
+    class Irregular(reader_module.PdfFileReader):
+        def __init__(self, stream, strict=True):
+            if strict:
+                raise reader_module.PdfStrictReadError("Illegal generation 4294967295 for object ID 0.")
+            super().__init__(stream, strict=False)
+            for text in complaints:
+                logging.getLogger("pyhanko.pdf_utils.reader").warning(text)
+
+    monkeypatch.setattr(reader_module, "PdfFileReader", Irregular)
+    [entry] = euamopdf.check_signatures(single)
+    assert entry["veredito"] == "ok" and "estrutura fora do padrão" in row(entry, "Estrutura")["texto"]
+    first, second = euamopdf.check_signatures(two)  # leitor sem queixas: vale a análise, como no relatório do VALIDAR
+    assert first["veredito"] == "ok" and second["veredito"] == "ok"
+    complaints.append("Invalid stream (index 0) within object 7 0: dado ilegível")
+    first, second = euamopdf.check_signatures(two)  # o leitor trocou algo por nulo: não dá para dizer o que mudou
+    assert first["veredito"] == "atencao" and "não consigo conferir o que mudou" in row(first, "Conteúdo")["texto"]
+    assert second["veredito"] == "ok"  # cobre o arquivo inteiro: só o hash, que não depende do leitor
+
+
+def test_a_damaged_pdf_is_reported_as_unreadable_whatever_the_parser_raises(monkeypatch, client, signed):
+    """Em 650 arquivos corrompidos de propósito, 48 faziam o pyHanko levantar ValueError, KeyError, AssertionError ou
+    CMSExtractionError, e saía o erro genérico do servidor em vez da mensagem desta ferramenta."""
+    import pyhanko.pdf_utils.reader as reader_module
+    for error in (ValueError("invalid literal"), KeyError("/Type"), AssertionError()):
+        def broken(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(reader_module, "PdfFileReader", broken)
+        r = client.post("/signatures", data={"file": (io.BytesIO(signed), "a.pdf")})  # com assinatura: pode ter sido adulterada
+        assert r.status_code == 400 and "assinatura que não consigo ler" in r.get_data(as_text=True)
+        r = client.post("/signatures", data={"file": (io.BytesIO(make_pdf()), "a.pdf")})  # sem assinatura: só um arquivo ruim
+        assert r.status_code == 400 and "Não consegui ler as assinaturas" in r.get_data(as_text=True)
+
+
+def test_a_certificate_of_the_govbr_chain_that_is_not_a_person_signature_one_is_not_trusted_for_the_name(pki, govbr):
+    """A cadeia pode emitir outros tipos de certificado; o perfil medido nos certificados reais é o único aceito."""
+    [entry] = euamopdf.check_signatures(sign_pdf_with(pki.issue(govbr, policy=False)))
+    assert entry["veredito"] == "atencao" and not entry["confirmado"]
+    assert "não é um certificado de assinatura de pessoa" in row(entry, "Certificado")["texto"]
+
+
+def test_a_date_before_the_certificate_existed_is_not_a_valid_signature(signed, monkeypatch):
+    real = euamopdf.declared_time
+    monkeypatch.setattr(euamopdf, "declared_time", lambda sig: real(sig) - timedelta(days=60))  # o certificado vale desde 30 dias atrás
+    [entry] = euamopdf.check_signatures(signed)
+    assert entry["veredito"] == "invalida" and "anterior à emissão do certificado" in entry["resumo"]
+
+
+def test_a_certificate_that_claims_to_be_from_an_unknown_govbr_authority_asks_for_an_update(pki, govbr):
+    unknown = certs.new_authority("AC Final do Governo Federal do Brasil v9", org="Gov-Br")
+    [entry] = euamopdf.check_signatures(sign_pdf_with(pki.issue(unknown)))
+    assert entry["veredito"] == "atencao" and "falta atualizar o EuAmoPDF" in row(entry, "Certificado")["texto"]
+
+
+def test_the_name_shown_has_no_control_or_direction_characters_and_a_limited_size(pki, govbr):
+    """O nome sai de um certificado, que é entrada do usuário: uma marca de direção do texto reordena o que se lê."""
+    name, _ = euamopdf.signer_identity(pki.issue(govbr, name="\u202eAAAA\nBBBB\u200bCCCC").asn1)
+    assert name == "AAAA BBBBCCCC" and not any(unicodedata.category(ch) in ("Cc", "Cf") for ch in name)
+    # o X.509 limita o CN a 64 caracteres, mas um certificado forjado à mão não obedece
+    long = types.SimpleNamespace(subject=types.SimpleNamespace(native={"common_name": "X" * 300}), subject_alt_name_value=None)
+    assert len(euamopdf.signer_identity(long)[0]) == 120
+
+
+def test_too_many_signatures_are_refused_instead_of_freezing_the_window(pki, govbr, monkeypatch):
+    two = certs.sign_pdf(pki.issue(govbr, name="SEGUNDO"), sign_pdf_with(pki.issue(govbr)), field_name="Signature2")
+    monkeypatch.setattr(euamopdf, "MAX_SIGNATURES", 1)
+    with pytest.raises(euamopdf.UserError, match="mais de 1 assinaturas"):
+        euamopdf.check_signatures(two)
+
+
+def test_the_revocation_download_never_follows_a_redirect(monkeypatch):
+    """Quem estivesse no caminho da conexão em HTTP puro poderia mandar o app a outro endereço, até a própria máquina."""
+    import http.server
+    import threading
+    hits = []
+
+    class Redirecting(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            if self.path == "/lista.crl":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/outro")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(euamopdf, "GOVBR_CRLS", (f"http://127.0.0.1:{server.server_port}/lista.crl",))
+        monkeypatch.setattr(euamopdf, "CRL_CACHE", {})
+        with pytest.raises(OSError):  # o 302 vira HTTPError, que a validação trata como "não consegui conferir"
+            euamopdf.fetch_crls()
+    finally:
+        server.shutdown()
+    assert hits == ["/lista.crl"]
+
+
+def test_a_certification_that_allows_no_changes_is_broken_even_by_a_metadata_change(pki, govbr):
+    """Medido: o pyHanko trata os metadados como inofensivos, e um título trocado depois de uma certificação P=1
+    ("nenhuma mudança") saía verde."""
+    pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=certs.MDPPerm.NO_CHANGES)
+    [entry] = euamopdf.check_signatures(certs.append_update(pdf, "title"))
+    assert entry["veredito"] == "invalida"
+
+
+@pytest.mark.parametrize("permission", [None, certs.MDPPerm.FILL_FORMS, certs.MDPPerm.NO_CHANGES])
+def test_bytes_nobody_signed_after_the_end_of_the_file_are_never_green(pki, govbr, permission):
+    """Dados depois do %%EOF não alteram o documento, mas são um lugar para esconder o que ninguém assinou."""
+    pdf = certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=permission) + b"\n% escondido\n99 0 obj << /Hacked true >> endobj\n"
+    [entry] = euamopdf.check_signatures(pdf)
+    assert entry["veredito"] == "atencao" and "dados depois do que foi assinado" in row(entry, "Conteúdo")["texto"]
+
+
+def test_changing_one_digit_of_the_signed_text_is_invalid_for_every_kind_of_signature(pki, govbr):
+    for permission in (None, certs.MDPPerm.FILL_FORMS, certs.MDPPerm.ANNOTATE, certs.MDPPerm.NO_CHANGES):
+        pdf = bytearray(certs.sign_pdf(pki.issue(govbr), make_pdf(1), certify=permission))
+        at = re.search(rb"\[<([0-9a-f]{8,})>\]TJ", pdf).start(1) + 7
+        pdf[at] = ord("3") if pdf[at] != ord("3") else ord("4")
+        [entry] = euamopdf.check_signatures(bytes(pdf))
+        assert entry["veredito"] == "invalida", permission
+
+
+def test_a_forged_signature_container_says_it_may_have_been_tampered_with(signed):
+    """Os ataques USF e SWA (pdf-insecurity.org) mexem no contêiner da assinatura para o validador não achá-la."""
+    pdf = bytearray(signed)
+    contents = re.search(rb"/Contents\s*<([0-9a-fA-F]+)>", pdf)
+    pdf[contents.start(1):contents.start(1) + 4] = b"0000"
+    with pytest.raises(euamopdf.UserError, match="danificado ou a assinatura foi adulterada"):
+        euamopdf.check_signatures(bytes(pdf))
+
+
+def test_the_embedded_govbr_chain_is_the_expected_one_and_a_swapped_file_is_refused(monkeypatch):
+    euamopdf.govbr_chain.cache_clear()
+    try:
+        root, intermediates = euamopdf.govbr_chain()
+        assert hashlib.sha256(root.dump()).hexdigest() == euamopdf.GOVBR_ROOT_SHA256
+        assert "Raiz do Governo Federal" in root.subject.native["common_name"] and len(intermediates) == 2
+        euamopdf.govbr_chain.cache_clear()
+        monkeypatch.setattr(euamopdf, "GOVBR_ROOT_SHA256", "0" * 64)
+        with pytest.raises(RuntimeError):
+            euamopdf.govbr_chain()
+    finally:
+        monkeypatch.undo()
+        euamopdf.govbr_chain.cache_clear()
+
+
+def test_the_signatures_route_reports_and_refuses_what_it_cannot_read(client, signed):
+    def send(data, name="a.pdf", **form):
+        return client.post("/signatures", data={"file": (io.BytesIO(data), name), **form})
+    r = send(signed)
+    assert r.status_code == 200 and r.get_json()["assinaturas"][0]["veredito"] == "ok"
+    assert send(make_pdf()).get_json() == {"assinaturas": []}
+    assert send(b"x", name="a.txt").status_code == 400
+    assert send(b"", name="a.pdf").status_code == 400
+    locked = pymupdf.open(stream=make_pdf(), filetype="pdf").tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256,
+                                                                      user_pw="a", owner_pw="b")
+    assert "senha" in send(locked).get_data(as_text=True)
+    assert client.post("/convert", data={"action": "verify-signature", "file": (io.BytesIO(signed), "a.pdf")}).status_code == 400
 
 
 # --- Validação ---

@@ -100,6 +100,8 @@
                     'Guarde a senha: sem ela não dá para abrir o PDF, nem aqui.') }}
             {{ tool('unlock-pdf', '🔓', 'Remover senha', 'Tire a senha e as restrições de um PDF.', 'password',
                     'Se o PDF abre sem senha e só bloqueia impressão ou cópia, deixe a senha em branco.') }}
+            {{ tool('verify-signature', '✍️', 'Validar assinatura', 'Veja quem assinou o PDF e se ele foi alterado depois.',
+                    'signatures revocation', 'Vale para a assinatura digital do gov.br.') }}
         </div>
     </section>
 </main>
@@ -274,6 +276,14 @@
             </select>
         </div>
 
+        <div class="field" data-field="signatures" hidden>
+            <div id="signatures" class="signatures" aria-live="polite"></div>
+        </div>
+        <div class="field" data-field="revocation" hidden>
+            <label class="check"><input type="checkbox" name="revocation" value="1"> Conferir se o certificado foi revogado</label>
+            <p class="muted">Baixa do gov.br a lista pública de certificados revogados (cerca de 3 MB). Só a lista é baixada: o PDF não sai do seu computador.</p>
+        </div>
+
         <div class="field" data-field="estimate" hidden>
             <p id="estimate" class="estimate" aria-live="polite"></p>
         </div>
@@ -282,6 +292,19 @@
         <p id="status" class="status" role="status" aria-live="polite" hidden></p>
 
         <button type="submit" id="submit" class="primary"></button>
+    </form>
+</dialog>
+
+<dialog id="signature-dialog" aria-labelledby="signature-title">
+    <form method="dialog">
+        <h3 id="signature-title">Este PDF tem assinatura digital</h3>
+        <p>No arquivo gerado a assinatura deixa de valer, mesmo que o selo continue aparecendo na página.
+           Para entregar um documento assinado, assine depois de montá-lo.</p>
+        <p class="muted">O arquivo original não é alterado.</p>
+        <div class="dialog-actions">
+            <button value="cancel" class="secondary" autofocus>Cancelar</button>
+            <button value="download" class="primary">Baixar mesmo assim</button>
+        </div>
     </form>
 </dialog>
 

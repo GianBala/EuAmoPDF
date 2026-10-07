@@ -1,9 +1,11 @@
 from flask import Flask, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 import base64
+import functools
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import random
@@ -16,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 import warnings
 import webbrowser # Biblioteca para abrir o navegador
@@ -2228,6 +2231,7 @@ def index():
     # Extensões aceitas e se aceita vários arquivos, para os botões da interface
     tools = {action: {'accept': ','.join(accepted), 'multiple': multiple}
              for action, (_, accepted, multiple) in ACTIONS.items()}
+    tools['verify-signature'] = {'accept': ','.join(PDF), 'multiple': False}  # rota própria: não devolve arquivo
     return render_template('index.html', tools=tools, bg_model_ready=bg_model_path().exists(), bg_model_mb=BG_MODEL_MB)
 
 @app.route('/pages', methods=['POST'])
@@ -2288,8 +2292,6 @@ def unexpected_error(e):
 # Ferramentas que gravam um PDF novo a partir do enviado
 REWRITES_PDF = {'merge-pdf', 'split-pdf', 'organize-pdf', 'rotate-pdf', 'compress-pdf', 'ocr-pdf', 'watermark-pdf',
                 'number-pages', 'edit-metadata', 'protect-pdf', 'unlock-pdf'}
-SIGNED_WARNING = ("O PDF enviado tem assinatura digital (como a do gov.br): no arquivo gerado ela não vale mais, "
-                  "mesmo que o selo continue aparecendo. Para entregar um documento assinado, assine depois de montá-lo.")
 
 
 def signed(path, password=''):
@@ -2319,6 +2321,402 @@ def signed(path, password=''):
     return False
 
 
+# --- Validação de assinatura digital (a do gov.br) ---
+
+# A cadeia do gov.br: a raiz do próprio governo federal (e não a da ICP-Brasil) e as duas ACs intermediárias, de
+# http://repo.iti.br/docs/Cadeia_GovBr-der.p7b. O arquivo é só o transporte: quem confia é a impressão digital
+# abaixo, conferida ao carregar, e um arquivo trocado dentro do pacote não vira âncora de confiança.
+GOVBR_CHAIN = 'certs/Cadeia_GovBr.p7b'
+GOVBR_ROOT_SHA256 = '163bd003bc0df2beab88174b6d5b450b6e1dc973a64b2dc2a33218544f49ef4e'
+# Só estas URLs são baixadas: o certificado do PDF é entrada do usuário e não escolhe aonde o app vai na internet
+GOVBR_CRLS = ('http://repo.iti.br/lcr/public/acf/LCRacfGovBr.crl',  # da AC que emite as assinaturas: 3 MB
+              'http://repo.iti.br/lcr/public/aci/LCRaciGovBr.crl',
+              'http://repo.iti.br/lcr/public/LCRacraizGovBr.crl')
+CRL_TIMEOUT = 10  # segundos, por lista
+GOVBR_POLICY = '2.16.76.3.2.1.1'  # política do certificado de assinatura de pessoa do gov.br: igual nos 6 certificados reais medidos
+MAX_SIGNATURES = 50
+CRL_MAX_MB = 30
+CRL_CACHE = {}  # URL -> (vale até, lista): cada CRL traz o próprio prazo, que no gov.br é de 2 horas
+
+
+@functools.lru_cache(maxsize=1)
+def govbr_chain():
+    """(raiz, intermediárias) do gov.br, como certificados do asn1crypto."""
+    from asn1crypto import cms
+    der = (bundled(GOVBR_CHAIN) or Path(__file__).parent / GOVBR_CHAIN).read_bytes()
+    certs = [c.chosen for c in cms.ContentInfo.load(der)['content']['certificates']]
+    roots = [c for c in certs if hashlib.sha256(c.dump()).hexdigest() == GOVBR_ROOT_SHA256]
+    if len(roots) != 1:
+        raise RuntimeError("A cadeia do gov.br embutida não tem a raiz esperada.")
+    return roots[0], [c for c in certs if c is not roots[0]]
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A conexão é em HTTP puro (o HTTPS do repo.iti.br não passa na verificação de certificado do sistema), e quem
+    estivesse no caminho poderia mandar o app buscar a lista em outro endereço, inclusive nesta própria máquina."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+CRL_OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def fetch_crls():
+    """As listas de certificados revogados do gov.br, do cache enquanto valem. É o único ponto da validação
+    que usa a internet, e só quando o usuário pede: o documento nunca sai da máquina, só se baixa uma lista."""
+    from asn1crypto import crl
+    lists = []
+    for url in GOVBR_CRLS:
+        until, listed = CRL_CACHE.get(url, (0, None))
+        if until <= time.time():
+            with CRL_OPENER.open(url, timeout=CRL_TIMEOUT) as response:
+                listed = crl.CertificateList.load(response.read(CRL_MAX_MB * 1024 * 1024))
+            next_update = listed['tbs_cert_list']['next_update'].native
+            CRL_CACHE[url] = (next_update.timestamp() if next_update else 0, listed)
+        lists.append(listed)
+    return lists
+
+
+def valid_cpf(cpf):
+    if len(cpf) != 11 or not cpf.isdigit() or len(set(cpf)) == 1:
+        return False
+    def digit(base):
+        return sum(int(d) * (len(base) + 1 - i) for i, d in enumerate(base)) * 10 % 11 % 10
+    return digit(cpf[:9]) == int(cpf[9]) and digit(cpf[:10]) == int(cpf[10])
+
+
+def signer_identity(cert):
+    """(nome, CPF mascarado) do certificado. O OID 2.16.76.1.3.1 traz a data de nascimento e o CPF, e o
+    certificado ainda carrega outros dados pessoais: só o nome e o CPF mascarado saem daqui, nunca o resto."""
+    name = cert.subject.native.get('common_name')
+    name = name if isinstance(name, str) else cert.subject.human_friendly
+    name = re.sub(r'\s*:?\s*\d{11}\b', '', name)  # certificados e-CPF: "NOME:12345678901"
+    # O nome sai de um certificado que é entrada do usuário: sem controles nem marcas de direção do texto (que
+    # reordenam o que se lê na tela), sem espaços repetidos e com tamanho limitado
+    name = re.sub(r'[\t\n\r\x0b\x0c\x85]', ' ', name)  # a quebra de linha vira espaço, e não junta as palavras
+    name = ''.join(ch for ch in name if unicodedata.category(ch) not in ('Cc', 'Cf', 'Zl', 'Zp'))
+    name = re.sub(r'\s+', ' ', name).strip()[:120]
+    for general in cert.subject_alt_name_value or []:
+        if general.name == 'other_name' and general.chosen['type_id'].dotted == '2.16.76.1.3.1':
+            raw = general.chosen['value'].native  # bytes no gov.br; texto, conforme a AC
+            digits = raw.decode('ascii', 'replace') if isinstance(raw, bytes) else str(raw)
+            cpf = digits[8:19]  # 8 dígitos de nascimento, depois o CPF
+            if valid_cpf(cpf):
+                return name, f"***.{cpf[3:6]}.{cpf[6:9]}-**"
+    return name, None
+
+
+def govbr_person_profile(cert):
+    """A cadeia do gov.br pode emitir outros tipos de certificado, e o app só confia nela para o nome de quem assina:
+    vale o certificado de pessoa (a política do gov.br, folha, assinatura digital e um CPF válido)."""
+    policies = {p['policy_identifier'].native for p in cert.certificate_policies_value or []}
+    usage = set(cert.key_usage_value.native) if cert.key_usage_value else set()
+    return GOVBR_POLICY in policies and not cert.ca and 'digital_signature' in usage and signer_identity(cert)[1] is not None
+
+
+# Certificado vencido ou de outra autoridade é um resultado, que a tela já explica: o pyHanko o registra como erro, com o
+# traceback inteiro, e isso aparecia no terminal do usuário a cada validação. Os avisos não saem na tela, mas são coletados
+for _name in ('pyhanko', 'pyhanko_certvalidator'):
+    _logger = logging.getLogger(_name)
+    _logger.setLevel(logging.WARNING)
+    _logger.propagate = False
+    _logger.addHandler(logging.NullHandler())
+
+
+class ReaderWarnings(logging.Handler):
+    """Guarda se o leitor de PDF do pyHanko avisou de algo: no modo tolerante ele troca por nulo o que não consegue ler,
+    e então a análise das alterações depois da assinatura não merece confiança."""
+    def __init__(self):
+        super().__init__(logging.WARNING)
+        self.seen = False
+        self.thread = threading.get_ident()  # o servidor atende vários pedidos ao mesmo tempo
+
+    def emit(self, record):
+        if record.thread == self.thread and record.name.startswith('pyhanko.pdf_utils'):
+            self.seen = True
+
+
+def check_signatures(data, check_revocation=False, now=None):
+    warned = ReaderWarnings()
+    loggers = [logging.getLogger(name) for name in ('pyhanko', 'pyhanko_certvalidator')]
+    for logger in loggers:
+        logger.addHandler(warned)
+    try:
+        return _check_signatures(data, check_revocation, now, warned)
+    finally:
+        for logger in loggers:
+            logger.removeHandler(warned)
+
+
+def _check_signatures(data, check_revocation, now, warned):
+    """Uma entrada por assinatura do PDF: quem assinou, se o conteúdo é o que foi assinado, se o certificado
+    é do gov.br e, se pedido, se foi revogado. Cada parte tem a própria linha, e a data vem do assinante: o
+    gov.br não carimba o tempo, então a hora não é garantida e a tela diz isso em vez de afirmar "válida"."""
+    from pyhanko.pdf_utils.reader import PdfFileReader, PdfStrictReadError
+    from pyhanko.sign.diff_analysis import (
+        CatalogModificationRule, DocInfoRule, DSSCompareRule, FormUpdatingRule, GenericFieldModificationRule,
+        MetadataUpdateRule, ModificationLevel, ObjectStreamRule, SigFieldCreationRule, SigFieldModificationRule,
+        StandardDiffPolicy, XrefStreamRule)
+    from pyhanko.sign.validation import SignatureCoverageLevel, validate_pdf_signature
+    from pyhanko.sign.validation.settings import KeyUsageConstraints
+    from pyhanko_certvalidator import ValidationContext
+
+    root, intermediates = govbr_chain()  # antes de ler o PDF: um pacote sem a cadeia falha logo, não só no primeiro assinado
+    # O pyHanko, por padrão, recusa PDFs de estrutura irregular, e em 6 de 18 PDFs assinados desta máquina isso
+    # bastou para a assinatura sair como "não consegui conferir": referência híbrida (tabela e fluxo de xref juntos) e
+    # geração 4294967295 no objeto 0, que vários sistemas ainda gravam, e o VALIDAR aprova esses arquivos (medido). O modo
+    # tolerante só entra se o estrito falhar. Ele troca por nulo o que não consegue ler, e é isso que a análise das alterações
+    # depois da assinatura lê: só se confia nela se o leitor não avisou de nada. O hash do conteúdo não depende do leitor
+    lenient = False
+    try:
+        try:
+            reader = PdfFileReader(io.BytesIO(data))
+            lenient = reader.xrefs.hybrid_xrefs_present
+        except PdfStrictReadError:
+            lenient = True
+        if lenient:
+            reader = PdfFileReader(io.BytesIO(data), strict=False)
+        signatures = list(reader.embedded_regular_signatures)  # o carimbo de tempo do documento não é uma assinatura
+        stamped = bool(list(reader.embedded_timestamp_signatures))
+        opened_with_warnings = warned.seen
+        if len(signatures) > MAX_SIGNATURES:
+            raise OverflowError
+    except OverflowError:  # cada assinatura repete a análise das revisões: um PDF com centenas travaria a janela
+        raise UserError(f"Este PDF tem mais de {MAX_SIGNATURES} assinaturas, e não valido tantas de uma vez.")
+    except Exception:  # ler o arquivo de terceiros: o pyHanko levanta de ValueError a KeyError em um PDF danificado
+        try:
+            locked = pymupdf.open(stream=data, filetype='pdf').needs_pass
+        except Exception:
+            locked = False
+        raise UserError("Este PDF tem senha, e a assinatura não pode ser conferida nele." if locked else
+                        "O PDF tem uma assinatura que não consigo ler: o arquivo está danificado ou a assinatura foi adulterada."
+                        if b'/ByteRange' in data else
+                        "Não consegui ler as assinaturas deste PDF. Veja se ele abre normalmente em outro programa.")
+    now = now or datetime.now(timezone.utc)
+    # O certificado do gov.br só tem "assinatura digital" no uso da chave, sem o não-repúdio que distingue a
+    # assinatura qualificada: o padrão do pyHanko exige o não-repúdio e recusaria toda assinatura do gov.br
+    key_usage = KeyUsageConstraints(key_usage={'digital_signature'}, extd_key_usage=None)
+    crls, crl_failed = [], False
+    if check_revocation:
+        try:
+            crls = fetch_crls()
+        except (OSError, ValueError):  # sem internet, servidor fora do ar, lista que não abre
+            crl_failed = True
+
+    # A política padrão do pyHanko reprova uma certificação (DocMDP) seguida de um novo campo de assinatura visível, e a
+    # própria documentação dele diz que isso é "mais rígido que o Acrobat". Com P=2 ("preencher e assinar") é o fluxo do
+    # gov.br (o aluno assina, depois o orientador) e o validador do ITI aprova; só essa exceção é aberta, e qualquer
+    # outra alteração depois da assinatura, ou uma certificação sem permissão nenhuma (P=1), continua reprovada
+    diff_policy = StandardDiffPolicy(
+        global_rules=[CatalogModificationRule(), DocInfoRule().as_qualified(ModificationLevel.LTA_UPDATES),
+                      XrefStreamRule().as_qualified(ModificationLevel.LTA_UPDATES),
+                      ObjectStreamRule().as_qualified(ModificationLevel.LTA_UPDATES),
+                      DSSCompareRule().as_qualified(ModificationLevel.LTA_UPDATES),
+                      MetadataUpdateRule().as_qualified(ModificationLevel.LTA_UPDATES)],
+        form_rule=FormUpdatingRule(field_rules=[SigFieldCreationRule(allow_new_visible_after_certify=True),
+                                                SigFieldModificationRule(), GenericFieldModificationRule()]))
+
+    def validate(sig, moment, strict=False):
+        # Medido: no 'soft-fail' e no 'hard-fail' o pyHanko dá como confiável um certificado que a CRL lista como
+        # revogado (só o recusa havendo carimbo de tempo, e a data do gov.br é a do próprio assinante); só o
+        # 'require' o recusa. Sem a CRL ele também recusa, e é daí que sai o "não consegui conferir"
+        context = ValidationContext(trust_roots=[root], other_certs=intermediates, allow_fetching=False, moment=moment,
+                                    crls=crls if strict else [], revocation_mode='require' if strict else 'soft-fail')
+        return validate_pdf_signature(sig, signer_validation_context=context, key_usage_settings=key_usage,
+                                      diff_policy=diff_policy)
+
+    report = []
+    for sig in signatures:
+        try:
+            later = sum(other.signed_revision > sig.signed_revision for other in signatures)
+            warned.seen = False
+            report.append(describe_signature(sig, validate, now, crls, check_revocation, crl_failed, SignatureCoverageLevel,
+                                             ModificationLevel, later, stamped, lenient, warned, opened_with_warnings, len(data)))
+        except Exception:  # uma assinatura que não abre não derruba o relatório das outras
+            app.logger.exception("Falha ao validar a assinatura %r", sig.field_name)  # %r: o nome do campo vem do PDF e não pode quebrar o log
+            # amarelo, e não vermelho: não conseguir ler é "indeterminado", e não prova que a assinatura é falsa
+            report.append({'campo': sig.field_name, 'nome': None, 'cpf': None, 'confirmado': False, 'veredito': 'atencao',
+                           'resumo': "Não consegui conferir esta assinatura.", 'itens': []})
+    return report
+
+
+def declared_time(sig):
+    """A data que o assinante declarou. Vale o /M do dicionário da assinatura, que é o que o validador do gov.br mostra:
+    o signing-time de dentro do CMS (que o pyHanko prefere) saiu 1 s à frente no documento comparado."""
+    from pyhanko.pdf_utils.generic import parse_pdf_date
+    try:
+        declared = parse_pdf_date(str(sig.sig_object['/M']))
+    except (KeyError, ValueError):
+        return sig.self_reported_timestamp
+    return declared if declared.tzinfo else declared.replace(tzinfo=timezone.utc)  # sem fuso, a comparação com o certificado falharia
+
+
+def revoked_on(crls, serial):
+    """Quando a lista diz que o certificado foi revogado, ou None."""
+    for listed in crls:
+        for entry in listed['tbs_cert_list']['revoked_certificates'] or []:
+            if entry['user_certificate'].native == serial:
+                return entry['revocation_date'].native
+
+
+def describe_signature(sig, validate, now, crls, check_revocation, crl_failed, coverage_levels, modification_levels,
+                       later=0, stamped=False, lenient=False, warned=None, opened_with_warnings=False, size=0):
+    from pyhanko.sign.fields import MDPPerm
+    cert, declared = sig.signer_cert, declared_time(sig)
+    status = validate(sig, now)
+    intact = status.intact and status.valid
+    irregular = lenient and (opened_with_warnings or (warned is not None and warned.seen))
+    if not intact:
+        change = None
+    elif status.coverage == coverage_levels.ENTIRE_FILE:
+        change = 'nenhuma'
+    elif irregular:
+        change = 'estrutura'  # há alterações depois, e o leitor tolerante avisou que trocou algo por nulo
+    elif not status.docmdp_ok:  # há revisões depois da assinatura: o pyHanko confere se só mexeram no que ela permite
+        change = 'indevida'
+    elif stamped and status.modification_level <= modification_levels.LTA_UPDATES:
+        change = 'nenhuma'  # só entrou o carimbo de tempo do documento, que é o esperado
+    elif status.modification_level == modification_levels.NONE and not later:
+        change = 'extra'  # nada mudou, mas o arquivo tem bytes que ninguém assinou (por exemplo, depois do %%EOF)
+    elif sig.docmdp_level == MDPPerm.NO_CHANGES:
+        # P=1 proíbe qualquer alteração; o pyHanko trata os metadados como inofensivos, e um título trocado depois de uma
+        # certificação "sem mudanças" saía verde (medido)
+        change = 'indevida'
+    elif later and status.modification_level <= modification_levels.FORM_FILLING:
+        # Outra assinatura depois é o fluxo normal, com ou sem DocMDP: o VALIDAR aprovou a 1ª assinatura de 3 PDFs sem
+        # DocMDP nenhum (medido), embora a cartilha dele diga que "poderá" dar indeterminada
+        change = 'dentro'
+    elif sig.docmdp_level is None:
+        # Outras mudanças (anotação, preenchimento, metadados) sem DocMDP: a assinatura não declara o que permite alterar,
+        # e o ITI avisa que o VALIDAR "poderá dar o resultado Assinatura Indeterminada"
+        change = 'sem_mdp'
+    else:
+        change = 'dentro'
+    # Certificado vencido: o que se pode dizer é se, na data que o assinante declarou, ele valia
+    expired = not cert.not_valid_before <= now <= cert.not_valid_after
+    valid_then = bool(intact and not status.trusted and expired and declared
+                      and cert.not_valid_before <= declared <= cert.not_valid_after and validate(sig, declared).trusted)
+    person = govbr_person_profile(cert)
+    # Uma assinatura que se diz anterior à emissão do certificado não existe: o VALIDAR mede a validade da cadeia na
+    # data da assinatura, e é aí que ela falharia. Cinco minutos de folga para os relógios de quem emitiu e de quem assinou
+    anachronism = bool(declared and declared < cert.not_valid_before - timedelta(minutes=5))
+    revocation = 'nao_conferida'
+    if check_revocation and status.trusted:
+        if crl_failed:
+            revocation = 'falhou'
+        else:
+            strict = validate(sig, now, strict=True)
+            revocation = 'conferida' if strict.trusted else 'falhou'
+            if strict.revoked:
+                when = revoked_on(crls, cert.serial_number)
+                # Revogado antes da data declarada não se sustenta; depois dela, sem carimbo de tempo não se prova nem
+                # uma coisa nem outra, e fica como ressalva (o ETSI chama de "revogado sem prova de existência")
+                revocation = 'revogado_depois' if when and declared and when > declared else 'revogado'
+
+    # Onde a assinatura diz que o conteúdo termina. Passando do fim do arquivo, ele foi cortado ou regravado depois (é o
+    # que o Juntar faz com o campo de assinatura copiado), e o VALIDAR mostra um arquivo assim como "assinatura desconhecida"
+    try:
+        *_, last_start, last_length = (int(n) for n in sig.sig_object['/ByteRange'])
+        beyond = max(0, last_start + last_length - size) if size else 0
+    except (KeyError, TypeError, ValueError):
+        beyond = 0
+    items = []
+    if change is None and beyond:
+        items.append(('Conteúdo', f"A assinatura cobre {beyond} bytes além do fim do arquivo: ele foi cortado ou regravado depois "
+                                  "de assinado. O VALIDAR do ITI mostra um arquivo assim como \"assinatura desconhecida\".", False))
+    elif change is None:
+        items.append(('Conteúdo', "O conteúdo não confere com o que foi assinado: o documento foi alterado depois de assinado.", False))
+    elif change == 'nenhuma':
+        items.append(('Conteúdo', "O documento é o mesmo que foi assinado.", True))
+    elif change == 'extra':
+        items.append(('Conteúdo', "O arquivo tem dados depois do que foi assinado, mas eles não alteram o documento. O VALIDAR do ITI "
+                                  "aprova um arquivo assim; aqui fica como ressalva porque ninguém assinou esses bytes.", None))
+    elif change == 'estrutura':
+        items.append(('Conteúdo', "O documento mudou depois de assinado, e a estrutura do PDF está fora do padrão: não consigo "
+                                  "conferir o que mudou.", None))
+    elif change == 'dentro':
+        items.append(('Conteúdo', f"O documento é o que foi assinado e depois recebeu mais {later} "
+                                  f"{'assinatura' if later == 1 else 'assinaturas'}"
+                                  + (", o que esta assinatura permite." if sig.docmdp_level is not None else ".")
+                                  if later else "O documento mudou depois de assinado, só no que esta assinatura permite.", True))
+    elif change == 'sem_mdp':
+        items.append(('Conteúdo', "O documento mudou depois de assinado (outra assinatura, preenchimento ou anotação), e esta "
+                                  "assinatura não declara o que permite alterar. O validador do ITI pode dar \"indeterminada\" "
+                                  "nesse caso. Confira o que mudou.", None))
+    else:
+        items.append(('Conteúdo', "O documento foi alterado depois de assinado: o que está nele não é o que foi assinado.", False))
+    if lenient and intact:
+        items.append(('Estrutura', "O PDF tem estrutura fora do padrão (referência híbrida ou tabela irregular), comum em "
+                                   "sistemas mais antigos, e foi lido de forma tolerante.", None))
+    if status.trusted and not person:
+        items.append(('Certificado', "Emitido por uma AC do gov.br, mas não é um certificado de assinatura de pessoa: o nome "
+                                     "do assinante não está comprovado.", None))
+    elif status.trusted:
+        items.append(('Certificado', f"Emitido pelo gov.br ({cert.issuer.native.get('common_name')}).", True))
+    elif valid_then:
+        items.append(('Certificado', f"Venceu em {cert.not_valid_after:%d/%m/%Y}. Na data que o assinante declarou ele estava "
+                                     "válido, mas sem carimbo de tempo isso não é garantido.", None))
+    elif not intact:
+        items.append(('Certificado', "Não avaliado: como o conteúdo não confere, o nome do assinante não está comprovado.", None))
+    elif cert.issuer.native.get('organization_name') == 'Gov-Br':
+        items.append(('Certificado', "O certificado diz ser de uma AC do gov.br que o app não conhece (pode ser uma AC nova, "
+                                     "e então falta atualizar o EuAmoPDF). O nome do assinante não está comprovado.", None))
+    else:
+        items.append(('Certificado', "Não foi possível confirmar que o certificado é do gov.br, então o nome do assinante "
+                                     "não está comprovado.", None))
+    if anachronism:
+        items.append(('Data', f"A data declarada ({declared.astimezone():%d/%m/%Y %H:%M:%S}) é anterior à emissão do "
+                              f"certificado ({cert.not_valid_before.astimezone():%d/%m/%Y}): não é possível.", False))
+    elif declared:
+        items.append(('Data', f"Assinado em {declared.astimezone():%d/%m/%Y %H:%M:%S}, conforme o próprio assinante. "
+                      + ("O documento tem carimbo de tempo, que não é analisado aqui." if stamped else
+                         "Não há carimbo de tempo, então a hora não é garantida."), None))
+    if revocation == 'conferida':
+        items.append(('Revogação', "Conferida: o certificado não consta na lista de revogados do gov.br.", True))
+    elif revocation == 'revogado':
+        when = revoked_on(crls, cert.serial_number)
+        items.append(('Revogação', "O certificado foi revogado" + (f" em {when:%d/%m/%Y}, antes da data que o assinante declarou."
+                                                                  if when else "."), False))
+    elif revocation == 'revogado_depois':
+        items.append(('Revogação', f"O certificado foi revogado em {revoked_on(crls, cert.serial_number):%d/%m/%Y}, depois da data "
+                                   "que o assinante declarou. Sem carimbo de tempo, não se comprova que a assinatura é "
+                                   "anterior à revogação.", None))
+    elif revocation == 'falhou':
+        items.append(('Revogação', "Não consegui conferir: sem internet, ou o servidor do gov.br não respondeu.", None))
+    elif status.trusted:
+        items.append(('Revogação', "Não conferida. Marque a opção abaixo e valide de novo para conferir se o certificado foi revogado.", None))
+    elif valid_then and check_revocation:
+        items.append(('Revogação', "Não conferida: o certificado já venceu.", None))
+
+    if not intact or change == 'indevida' or revocation == 'revogado' or anachronism:
+        verdict = 'invalida'
+        summary = ("Assinatura inválida: a data declarada é anterior à emissão do certificado." if intact and anachronism
+                   and change != 'indevida' else
+                   "Certificado revogado." if intact and change != 'indevida' else
+                   "Assinatura inválida: o arquivo foi cortado ou regravado depois de assinado." if beyond else
+                   "Assinatura inválida: o documento foi alterado depois de assinado.")
+    elif status.trusted and person and change in ('nenhuma', 'dentro') and revocation not in ('falhou', 'revogado_depois'):
+        verdict, summary = 'ok', "Assinatura íntegra, de certificado do gov.br." + (
+            " Revogação não conferida." if revocation == 'nao_conferida' else "")
+    else:
+        verdict, summary = 'atencao', "Assinatura íntegra, mas com ressalvas. Veja abaixo."
+    name, cpf = signer_identity(cert)
+    return {'campo': sig.field_name, 'nome': name, 'cpf': cpf, 'confirmado': bool((status.trusted or valid_then) and person), 'veredito': verdict,
+            'resumo': summary, 'itens': [{'rotulo': label, 'texto': text, 'ok': ok} for label, text, ok in items]}
+
+
+@app.route('/signatures', methods=['POST'])
+def signatures():
+    """Quem assinou o PDF escolhido e se a assinatura confere, para a tela mostrar."""
+    f = request.files.get('file')
+    if not f or not f.filename.lower().endswith('.pdf'):
+        raise UserError("Escolha um arquivo PDF.")
+    data = f.read()
+    if not data:
+        raise UserError("O arquivo enviado está vazio.")
+    return {'assinaturas': check_signatures(data, request.form.get('revocation') == '1')}
+
+
 @app.route('/convert', methods=['POST'])
 def handle_conversion():
     action = request.form.get('action')
@@ -2326,16 +2724,19 @@ def handle_conversion():
     def work(saved, tmp):
         data, download_name, *message = ACTIONS[action][0](saved, request.form, tmp)
         # A assinatura digital cobre os bytes exatos do arquivo assinado: o PDF gravado de novo não a
-        # tem mais válida, e o selo que continua na página engana quem recebe
-        if action in REWRITES_PDF and any(path.suffix == '.pdf' and data != path.read_bytes()
-                                          and signed(path, request.form.get('password', '')) for path, _ in saved):
-            message = [' '.join(message + [SIGNED_WARNING])]
-        return data, download_name, *message
+        # tem mais válida, e o selo que continua na página engana quem recebe. Só o resultado diz se
+        # difere do original (o Comprimir de um arquivo já otimizado o devolve igual), e por isso a
+        # pergunta vem depois de processar: a tela segura o arquivo pronto até o usuário decidir
+        lost = action in REWRITES_PDF and any(path.suffix == '.pdf' and data != path.read_bytes()
+                                              and signed(path, request.form.get('password', '')) for path, _ in saved)
+        return data, download_name, lost, *message
 
-    data, download_name, *message = process_uploads(action, work)
+    data, download_name, signature_lost, *message = process_uploads(action, work)
     response = send_file(io.BytesIO(data), as_attachment=True, download_name=download_name)
     if message:  # cabeçalhos HTTP só aceitam ASCII
         response.headers['X-Mensagem'] = quote(message[0])
+    if signature_lost:
+        response.headers['X-Assinatura'] = 'perdida'
     return response
 
 def png_response(img):
