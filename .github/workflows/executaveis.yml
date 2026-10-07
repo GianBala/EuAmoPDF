@@ -49,6 +49,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Somas de verificação, para quem baixa conferir o arquivo
+        run: cd dist && sha256sum EuAmoPDF* > SHA256SUMS
       - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
