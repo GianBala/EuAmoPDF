@@ -1312,6 +1312,34 @@ def test_microsoft_office_uses_its_own_instance_and_always_quits(monkeypatch, tm
     pythoncom.CoUninitialize.assert_called_once()
 
 
+OFFICE_DOCUMENTS = {"Word.Application": "Documents", "Excel.Application": "Workbooks", "PowerPoint.Application": "Presentations"}
+
+
+@pytest.fixture
+def fake_msoffice(monkeypatch):
+    """Microsoft Office simulado: devolve o objeto do aplicativo, que registra o que o app fez nele."""
+    office = mock.MagicMock()
+    client_module = types.SimpleNamespace(DispatchEx=mock.Mock(return_value=office))
+    monkeypatch.setitem(sys.modules, "pythoncom", mock.Mock())
+    monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=client_module))
+    monkeypatch.setitem(sys.modules, "win32com.client", client_module)
+    return office
+
+
+@pytest.mark.parametrize("app_name", OFFICE_DOCUMENTS)
+def test_microsoft_office_opens_files_with_macros_disabled(fake_msoffice, tmp_path, app_name):
+    opened = getattr(fake_msoffice, OFFICE_DOCUMENTS[app_name]).Open
+    security_when_opened = []
+    opened.side_effect = lambda *args, **kwargs: security_when_opened.append(fake_msoffice.AutomationSecurity) or mock.MagicMock()
+    euamopdf.msoffice_to_pdf(tmp_path / "a", tmp_path / "a.pdf", app_name)
+    # Por automação, o Office roda as macros do arquivo sem perguntar; 3 (ForceDisable) as desliga antes de abrir
+    assert security_when_opened == [3]
+    if app_name == "Excel.Application":
+        assert opened.call_args.kwargs["UpdateLinks"] == 0  # não busca planilhas vinculadas pela rede
+    if app_name == "Word.Application":
+        assert opened.call_args.kwargs["AddToRecentFiles"] is False
+
+
 # --- Validação ---
 
 @pytest.mark.parametrize("action, files, message", [
