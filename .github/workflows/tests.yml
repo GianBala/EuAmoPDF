@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   testes:
     strategy:
@@ -12,8 +15,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -31,7 +34,7 @@ jobs:
           echo "TESSDATA_PREFIX=$RUNNER_TEMP/tessdata" >> "$GITHUB_ENV"
       - run: pip install -r requirements-dev.txt
       - name: Guardar o modelo de remover fundo entre execuções
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ${{ runner.os == 'Windows' && '~\AppData\Local\euamopdf' || '~/.cache/euamopdf' }}  # app.bg_model_path()
           key: modelo-isnet-60920e99c454
@@ -45,8 +48,8 @@ jobs:
     name: versões mínimas (Python 3.10)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.10"
       - name: Instalar a menor série de cada dependência (Pillow>=10.0 vira Pillow==10.0.*)
