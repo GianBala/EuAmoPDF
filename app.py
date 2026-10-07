@@ -316,9 +316,60 @@ def docx_text_share(pdf_chars, path):
     return sum(min(n, got[c]) for c, n in pdf_chars.items()) / total if total else 1
 
 
+FONT_STYLE = r'(?:[\s-]+(?:Regular|Bold|Italic|Oblique|Light|Medium|Semibold|Black))+$'
+
+
+def font_objects(doc, xref):
+    """A fonte e, quando estão em objetos separados, a descendente (Type0) e os descritores."""
+    found = [xref]
+    kind, value = doc.xref_get_key(xref, 'DescendantFonts')
+    if kind == 'xref':
+        value = doc.xref_object(int(value.split()[0]), compressed=True)
+    if kind != 'null':
+        found += [int(n) for n in re.findall(r'^\[\s*(\d+) 0 R\s*\]$', value)]
+    for font in list(found):
+        kind, value = doc.xref_get_key(font, 'FontDescriptor')
+        if kind == 'xref':
+            found.append(int(value.split()[0]))
+    return found
+
+
+def name_fonts(doc):
+    """Dá às fontes de nome genérico o nome da família gravado no arquivo da fonte embutida e devolve
+    quantas mudaram. O "Microsoft Print to PDF" chama todas de CIDFont+F1, F2...: o pdf2docx acha a
+    fonte pelo nome, e o editor não conhecia o genérico e usava outra, mais larga, que cortava o texto."""
+    def simple(name):
+        return re.sub(r'[\W_]', '', name).lower()
+    seen, renamed = set(), 0
+    for page in doc:
+        for xref, _, _, basefont, *_ in page.get_fonts(full=True):
+            if xref in seen:
+                continue
+            seen.add(xref)
+            buffer = doc.extract_font(xref)[3]
+            try:
+                family = re.sub(FONT_STYLE, '', pymupdf.Font(fontbuffer=buffer).name) if buffer else ''
+            except Exception:  # fonte embutida que o MuPDF não lê: fica como está
+                continue
+            if not family or simple(family) in simple(basefont.split('+')[-1]):
+                continue
+            # O nome aparece em BaseFont e FontName, também nos dicionários escritos dentro da fonte
+            old = re.compile('/' + re.escape(basefont) + r'(?=[\s/<>\[\]()]|$)')
+            for obj in font_objects(doc, xref):
+                source = doc.xref_object(obj, compressed=True)
+                if old.search(source):
+                    doc.update_object(obj, old.sub('/' + family.replace(' ', '#20'), source))
+            renamed += 1
+    return renamed
+
+
 def pdf_to_word(files, form, tmp):
     path, base = files[0]
-    pdf_chars = text_chars(page.get_text() for page in open_pdf(path))
+    pdf = open_pdf(path)
+    pdf_chars = text_chars(page.get_text() for page in pdf)
+    if name_fonts(pdf):
+        path = tmp / 'entrada_word.pdf'
+        pdf.save(path)
     from pdf2docx import Converter  # importação lenta: só quando usada
 
     def convert(out, **options):
