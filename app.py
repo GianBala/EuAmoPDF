@@ -91,14 +91,17 @@ def msoffice_to_pdf(src, out, app_name):
     office = None
     try:
         office = win32com.client.DispatchEx(app_name)
+        # Por automação, o Office roda as macros do arquivo sem perguntar e sem o Modo Protegido (a
+        # cópia na pasta temporária não tem a marca de "baixado da internet"): 3 = ForceDisable
+        office.AutomationSecurity = 3
         if app_name == "Word.Application":
             office.DisplayAlerts = 0  # wdAlertsNone
-            doc = office.Documents.Open(str(src), ReadOnly=True)
+            doc = office.Documents.Open(str(src), ReadOnly=True, ConfirmConversions=False, AddToRecentFiles=False)
             try: doc.SaveAs(str(out), FileFormat=17)  # wdFormatPDF
             finally: doc.Close(False)
         elif app_name == "Excel.Application":
             office.DisplayAlerts = False
-            wb = office.Workbooks.Open(str(src), ReadOnly=True)
+            wb = office.Workbooks.Open(str(src), ReadOnly=True, UpdateLinks=0)  # sem buscar planilhas vinculadas
             try: wb.ExportAsFixedFormat(0, str(out))  # xlTypePDF
             finally: wb.Close(False)
         else:
