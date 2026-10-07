@@ -1,5 +1,6 @@
 import hashlib
 import io
+import re
 from datetime import datetime, timezone
 import subprocess
 import sys
@@ -1221,6 +1222,22 @@ def test_pdf_to_word_warns_when_text_is_still_missing(client, fake_pdf2docx):
     r = post(client, "pdf-to-word", ("doc.pdf", make_pdf(3)))
     assert b"Pagina 2" in unzip(r.data)["word/document.xml"]  # fica a tentativa com mais texto
     assert "Parte do texto" in unquote(r.headers["X-Mensagem"])
+
+
+def test_pdf_to_word_uses_the_real_font_name(client):
+    """O "Microsoft Print to PDF" chama todas as fontes de CIDFont+F1, F2...; o editor não conhece esse
+    nome e usava outra fonte, mais larga, que cortava o texto. O nome real está no arquivo da fonte."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_font(fontname="F1", fontbuffer=pymupdf.Font("tiro").buffer)  # Nimbus Roman, embutida
+    page.insert_text((72, 100), "Texto com a fonte renomeada", fontname="F1", fontsize=12)
+    pdf = pymupdf.open(stream=doc.tobytes())
+    for xref in range(1, pdf.xref_length()):
+        for key in ("BaseFont", "FontName"):
+            if pdf.xref_get_key(xref, key)[0] == "name":
+                pdf.xref_set_key(xref, key, "/CIDFont+F1")
+    xml = unzip(post(client, "pdf-to-word", ("doc.pdf", pdf.tobytes())).data)["word/document.xml"].decode()
+    assert set(re.findall(r'w:ascii="([^"]+)"', xml)) == {"Nimbus Roman"}
 
 
 def test_pdf_to_word_converts_once_when_no_text_is_lost(client, monkeypatch):
