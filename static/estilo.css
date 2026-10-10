@@ -119,6 +119,17 @@ h2 {
 .tool-icon { font-size: 1.6rem; line-height: 1; }
 .tool-text { display: flex; flex-direction: column; gap: 2px; }
 .tool-text small { color: var(--muted); font-size: 0.85rem; }
+.beta {
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+}
 
 dialog {
     width: min(560px, calc(100vw - 32px));
