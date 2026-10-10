@@ -8,12 +8,12 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}">
 </head>
 <body>
-{% macro tool(action, icon, title, desc, fields='', hint='') %}
+{% macro tool(action, icon, title, desc, fields='', hint='', beta=false) %}
     <button type="button" class="tool" data-action="{{ action }}" data-title="{{ title }}"
             data-accept="{{ tools[action].accept }}" data-fields="{{ fields }}" data-hint="{{ hint }}"
             {%- if tools[action].multiple %} data-multiple{% endif %}>
         <span class="tool-icon" aria-hidden="true">{{ icon }}</span>
-        <span class="tool-text"><strong>{{ title }}</strong><small>{{ desc }}</small></span>
+        <span class="tool-text"><strong>{{ title }}{% if beta %} <span class="beta" title="Em teste: o resultado pode não coincidir com o do validador oficial do ITI.">Beta</span>{% endif %}</strong><small>{{ desc }}</small></span>
     </button>
 {% endmacro %}
 
@@ -101,7 +101,7 @@
             {{ tool('unlock-pdf', '🔓', 'Remover senha', 'Tire a senha e as restrições de um PDF.', 'password',
                     'Se o PDF abre sem senha e só bloqueia impressão ou cópia, deixe a senha em branco.') }}
             {{ tool('verify-signature', '✍️', 'Validar assinatura', 'Veja quem assinou o PDF e se ele foi alterado depois.',
-                    'signatures revocation', 'Vale para a assinatura digital do gov.br.') }}
+                    'signatures revocation', 'Vale para a assinatura digital do gov.br.', beta=true) }}
         </div>
     </section>
 </main>
