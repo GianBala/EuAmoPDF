@@ -1,6 +1,7 @@
 Flask>=3.0
 Pillow>=10.0
-PyMuPDF>=1.25
+# Com o PyMuPDF 2.x os testes de PDF para Excel, de PDFs assinados e de compressão falham
+PyMuPDF>=1.25,<2
 pdf2docx>=0.5.8
 python-docx>=1.1
 openpyxl>=3.1
