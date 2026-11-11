@@ -60,5 +60,5 @@ jobs:
         with:
           python-version: "3.10"
       - name: Instalar a menor série de cada dependência (Pillow>=10.0 vira Pillow==10.0.*)
-        run: sed -e 's/>=\(.*\)/==\1.*/' requirements.txt > minimas.txt && pip install -r minimas.txt pytest
+        run: sed -e 's/>=\([^,]*\).*/==\1.*/' requirements.txt > minimas.txt && pip install -r minimas.txt pytest
       - run: pytest -q
