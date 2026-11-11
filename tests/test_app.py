@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unicodedata
 import zipfile
@@ -1779,10 +1780,19 @@ def test_libreoffice_timeout_kills_every_process_it_started(tmp_path):
     soffice.chmod(0o755)
     with pytest.raises(subprocess.TimeoutExpired):
         euamopdf.run_soffice([str(soffice)], timeout=1)
-    try:
-        state = Path(f"/proc/{grandchild.read_text().strip()}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (FileNotFoundError, ProcessLookupError):  # sumiu antes ou durante a leitura
-        state = "morto"
+    pid = grandchild.read_text().strip()
+    # O SIGKILL chega ao neto de forma assíncrona: logo depois do killpg ele ainda pode aparecer como R
+    # (medido: até ~17 ms com a CPU ocupada, que é o caso do runner). Espera ele morrer, com folga,
+    # em vez de olhar uma vez só; um neto que sobrevive de verdade continua reprovando depois do prazo.
+    prazo = time.monotonic() + 5
+    while True:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):  # sumiu antes ou durante a leitura
+            state = "morto"
+        if state in ("morto", "Z", "X") or time.monotonic() > prazo:
+            break
+        time.sleep(0.01)
     assert state in ("morto", "Z", "X")  # Z e X: morto, sendo recolhido
 
 
